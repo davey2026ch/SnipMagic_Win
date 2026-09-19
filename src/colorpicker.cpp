@@ -139,8 +139,7 @@ void DrawSlider(HDC hdc, RECT rc, int idx, const PickState& st) {
         SolidBrush br(ToGpColor(c, idx == 4 ? static_cast<BYTE>(t * 255) : 255));
         g.FillRectangle(&br, rc.left + x, rc.top, 1, h);
     }
-    Pen pen(Color(255, 80, 80, 80), 1);
-    g.DrawRectangle(&pen, rc.left, rc.top, w - 1, h - 1);
+    // 不绘制黑色边框，仅保留滑块
 
     int val = 0;
     if (idx == 0) val = static_cast<int>(st.l * 255);
@@ -150,8 +149,8 @@ void DrawSlider(HDC hdc, RECT rc, int idx, const PickState& st) {
     else val = st.alpha;
     int hx = rc.left + static_cast<int>(val / 255.0f * (w - 8));
     SolidBrush hb(Color(255, 255, 255, 255));
-    Pen hp(Color(255, 0, 0, 0), 1);
     g.FillRectangle(&hb, hx, rc.top - 2, 8, h + 4);
+    Pen hp(Color(255, 90, 90, 90), 1);
     g.DrawRectangle(&hp, hx, rc.top - 2, 8, h + 4);
 }
 
@@ -570,29 +569,38 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha) {
 
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
-    int x = (sw - kDlgW) / 2;
-    int y = (sh - kDlgH) / 2;
+    RECT wr = { 0, 0, kDlgW, kDlgH };
+    DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    AdjustWindowRectEx(&wr, style, FALSE, WS_EX_TOPMOST);
+    int outerW = wr.right - wr.left;
+    int outerH = wr.bottom - wr.top;
+    int x = (sw - outerW) / 2;
+    int y = (sh - outerH) / 2;
 
-    HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+    HWND hwnd = CreateWindowExW(WS_EX_TOPMOST,
                                 kPickClass, L"选择颜色",
-                                WS_POPUP | WS_CAPTION | WS_SYSMENU,
-                                x, y, kDlgW, kDlgH,
+                                style,
+                                x, y, outerW, outerH,
                                 owner, nullptr, hi, &st);
     if (!hwnd) return st.result;
+    SetWindowTextW(hwnd, L"选择颜色");
 
     HINSTANCE comctl = GetModuleHandleW(L"comctl32.dll");
     // create child controls
     HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
 
+    // HEX 输入框与上方「透明度」滑杆等宽对齐
+    RECT alphaSr = SliderRect(hwnd, 4);
+    int hexW = alphaSr.right - alphaSr.left;
     HWND hex = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", st.hex.c_str(),
                                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                               90, 484, 200, 30, hwnd,
+                               alphaSr.left, 484, hexW, 30, hwnd,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HEX)), hi, nullptr);
-    // 吸管：HEX 下方单独一行
+    // 吸管：HEX 下方单独一行，同样对齐
     HWND eye = CreateWindowW(L"BUTTON", L"吸管（全屏取色）",
                              WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                             90, 530, 200, 34, hwnd,
+                             alphaSr.left, 530, hexW, 34, hwnd,
                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_EYEDROP)), hi, nullptr);
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,

@@ -86,7 +86,7 @@ private:
     int hoverTop_ = -1;
     HWND tipHwnd_ = nullptr;
     std::wstring tipText_;
-    bool tracking_ = false;
+    bool tipVisible_ = false;
 
     void ShowTooltip(int x, int y, const std::wstring& text);
     void HideTooltip();

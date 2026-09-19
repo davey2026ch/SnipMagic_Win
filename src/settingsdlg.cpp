@@ -1,13 +1,12 @@
 #include "settingsdlg.h"
 #include "settings.h"
 #include "version.h"
-#include "colorpicker.h"
 #include "app.h"
 
 namespace {
 
 const int kW = 560;
-const int kH = 560;
+const int kH = 480;
 
 enum {
     IDC_HOTKEY = 3001,
@@ -67,14 +66,6 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_COMMAND: {
         if (!st) return 0;
         int id = LOWORD(wParam);
-        if (id == IDC_THEMECOLOR) {
-            auto r = ColorPicker::Show(hwnd, st->themeColor, 255);
-            if (r.ok) {
-                st->themeColor = r.color;
-                PaintColorBtn(hwnd, st);
-            }
-            return 0;
-        }
         if (id == IDC_OK) {
             wchar_t buf[128] = {};
             GetWindowTextW(GetDlgItem(hwnd, IDC_HOTKEY), buf, 128);
@@ -96,7 +87,7 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (st->draft.mosaicSize < 1) st->draft.mosaicSize = 1;
             if (st->draft.lineThickness < 1) st->draft.lineThickness = 1;
             if (st->draft.brushThickness < 1) st->draft.brushThickness = 1;
-            st->draft.themeColor = st->themeColor;
+            // 保留原主题色（界面已移除该项）
             st->ok = true;
             st->done = true;
             DestroyWindow(hwnd);
@@ -165,12 +156,20 @@ bool SettingsDialog::Show(HWND owner) {
 
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
-    HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+    RECT wr = { 0, 0, kW, kH };
+    DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    DWORD exStyle = WS_EX_TOPMOST;
+    AdjustWindowRectEx(&wr, style, FALSE, exStyle);
+    int outerW = wr.right - wr.left;
+    int outerH = wr.bottom - wr.top;
+
+    HWND hwnd = CreateWindowExW(exStyle,
                                 kClass, L"设置",
-                                WS_POPUP | WS_CAPTION | WS_SYSMENU,
-                                (sw - kW) / 2, (sh - kH) / 2, kW, kH,
+                                style,
+                                (sw - outerW) / 2, (sh - outerH) / 2, outerW, outerH,
                                 owner, nullptr, hi, &st);
     if (!hwnd) return false;
+    SetWindowTextW(hwnd, L"设置");
 
     HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
@@ -218,12 +217,7 @@ bool SettingsDialog::Show(HWND owner) {
     edit(IDC_BRUSH, std::to_wstring(st.draft.brushThickness).c_str(), 160, y - 4, 100);
     y += 50;
 
-    label(L"主题色", 24, y);
-    st.colorBtn = CreateWindowW(L"BUTTON", L"",
-                                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                160, y - 6, 56, 36, hwnd,
-                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_THEMECOLOR)), hi, nullptr);
-    y += 56;
+    // 主题色已移除（当前版本无实际用途）
 
     std::wstring ver;
     {
@@ -232,17 +226,17 @@ bool SettingsDialog::Show(HWND owner) {
         ver = std::wstring(L"版本 ") + APP_VERSION + L"  ·  打包时间 " + wbt;
     }
     HWND verH = CreateWindowW(L"STATIC", ver.c_str(), WS_CHILD | WS_VISIBLE,
-                              24, kH - 110, kW - 48, 24, hwnd,
+                              24, kH - 100, kW - 48, 24, hwnd,
                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_VERSION)), hi, nullptr);
     SendMessageW(verH, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
 
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                            kW - 240, kH - 70, 100, 36, hwnd,
+                            kW - 240, kH - 64, 100, 36, hwnd,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OK)), hi, nullptr);
     HWND cancel = CreateWindowW(L"BUTTON", L"取消",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                kW - 120, kH - 70, 100, 36, hwnd,
+                                kW - 120, kH - 64, 100, 36, hwnd,
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CANCEL)), hi, nullptr);
     SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
@@ -264,7 +258,6 @@ bool SettingsDialog::Show(HWND owner) {
 
     if (!st.ok) return false;
 
-    // apply + persist
     AppSettings& s = Settings();
     s.hotkeyModifiers = st.draft.hotkeyModifiers;
     s.hotkeyVk = st.draft.hotkeyVk;
@@ -273,7 +266,7 @@ bool SettingsDialog::Show(HWND owner) {
     s.mosaicSize = st.draft.mosaicSize;
     s.lineThickness = st.draft.lineThickness;
     s.brushThickness = st.draft.brushThickness;
-    s.themeColor = st.themeColor;
+    // themeColor 保持原值（设置界面已不再提供）
     s.Save();
     App::Instance().OnSettingsChanged();
     return true;

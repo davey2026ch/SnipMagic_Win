@@ -480,7 +480,29 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
     }
 
     if (tool_ == Tool::Text) {
-        // open text dialog then place
+        // 点到已有文字 → 回填编辑；否则新建
+        int hit = doc_->HitTest(ix, iy);
+        if (hit >= 0 && doc_->annotations[hit]->type == AnnType::Text) {
+            auto* t = static_cast<TextAnn*>(doc_->annotations[hit].get());
+            TextDialogResult tr = TextDialog::Show(hwnd_, t->style.color, t);
+            if (tr.ok && !tr.text.empty()) {
+                doc_->PushUndo();
+                t->text = tr.text;
+                t->fontSize = tr.fontSize;
+                t->bold = tr.bold;
+                t->transparentBg = tr.transparentBg;
+                t->style.color = tr.color;
+                t->style.alpha = tr.alpha;
+                auto tmp = std::make_unique<Bitmap>(1, 1, PixelFormat32bppARGB);
+                Graphics mg(tmp.get());
+                t->Measure(mg);
+                doc_->ClearSelection();
+                t->selected = true;
+                doc_->selectedIdx = hit;
+            }
+            Refresh();
+            return;
+        }
         TextDialogResult tr = TextDialog::Show(hwnd_, Settings().drawColor);
         if (tr.ok && !tr.text.empty()) {
             doc_->PushUndo();
@@ -493,7 +515,6 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
             t->style.alpha = tr.alpha;
             t->rect = RectF(ix, iy, 10, 10);
             {
-                // measure
                 auto tmp = std::make_unique<Bitmap>(1, 1, PixelFormat32bppARGB);
                 Graphics mg(tmp.get());
                 t->Measure(mg);
@@ -692,6 +713,9 @@ void Canvas::OnDoubleClick(int x, int y) {
             auto tmp = std::make_unique<Bitmap>(1, 1, PixelFormat32bppARGB);
             Graphics mg(tmp.get());
             t->Measure(mg);
+            doc_->ClearSelection();
+            t->selected = true;
+            doc_->selectedIdx = hit;
             Refresh();
         }
     }

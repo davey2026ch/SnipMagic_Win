@@ -161,9 +161,24 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_MOUSEMOVE:
         OnMouseMove(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
+    case WM_TIMER:
+        if (wParam == 1) {
+            KillTimer(hwnd, 1);
+            if (hoverLeft_ >= 0 && hoverLeft_ < static_cast<int>(leftBtns_.size())) {
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(hwnd, &pt);
+                // 仍在同一按钮上才显示
+                if (HitLeftButton(pt.x, pt.y) == hoverLeft_) {
+                    ShowTooltip(pt.x, pt.y, leftBtns_[hoverLeft_].tip);
+                }
+            }
+        }
+        return 0;
     case WM_MOUSELEAVE:
         hoverLeft_ = -1;
         hoverTop_ = -1;
+        KillTimer(hwnd, 1);
         HideTooltip();
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
@@ -288,18 +303,34 @@ void App::DrawToolIcon(Graphics& g, const ToolButton& b, const RECT& rc,
         break;
     }
     case ID_TOOL_BRUSH: {
-        // 瓶刷：粗笔杆 + 扇形刷毛
-        g.DrawLine(&pen, cx - 2.0f, cy + 2.0f, cx + 7.0f, cy - 9.0f);
-        g.DrawLine(&penThin, cx + 5.0f, cy - 7.0f, cx + 9.0f, cy - 3.0f);
-        PointF bristles[4] = {
-            PointF(cx + 7.0f, cy - 9.0f),
-            PointF(cx + 2.0f, cy - 12.0f),
-            PointF(cx - 8.0f, cy + 2.0f),
-            PointF(cx - 2.0f, cy + 3.0f)
+        // 油漆刷：斜握把 + 金属箍 + 刷毛块
+        // 握把
+        Pen handle(ink, 3.0f);
+        handle.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
+        g.DrawLine(&handle, cx + 7.0f, cy - 10.0f, cx + 1.0f, cy - 3.0f);
+        // 金属箍
+        PointF ferrule[4] = {
+            PointF(cx + 2.0f, cy - 4.0f),
+            PointF(cx - 1.0f, cy - 1.0f),
+            PointF(cx - 4.0f, cy + 2.0f),
+            PointF(cx - 1.0f, cy + 1.0f) // will refine below
         };
-        g.FillPolygon(&br, bristles, 4);
-        g.DrawLine(&penThin, cx - 6.0f, cy - 2.0f, cx - 3.0f, cy + 1.0f);
-        g.DrawLine(&penThin, cx - 4.0f, cy - 4.0f, cx - 1.0f, cy - 1.0f);
+        // 更清晰的刷子轮廓
+        // 刷毛主体（左下）
+        PointF bristle[4] = {
+            PointF(cx - 1.0f, cy - 1.0f),
+            PointF(cx - 10.0f, cy + 6.0f),
+            PointF(cx - 8.0f, cy + 10.0f),
+            PointF(cx + 2.0f, cy + 3.0f)
+        };
+        g.FillPolygon(&br, bristle, 4);
+        // 箍
+        Pen ferrulePen(ink, 2.2f);
+        g.DrawLine(&ferrulePen, cx + 2.0f, cy - 4.0f, cx - 1.5f, cy + 0.5f);
+        // 刷毛纹理
+        g.DrawLine(&penThin, cx - 7.0f, cy + 5.0f, cx - 5.0f, cy + 8.0f);
+        g.DrawLine(&penThin, cx - 4.0f, cy + 4.0f, cx - 2.0f, cy + 7.0f);
+        (void)ferrule;
         break;
     }
     case ID_TOOL_VIEW: {
@@ -431,15 +462,20 @@ void App::ShowTooltip(int x, int y, const std::wstring& text) {
     HINSTANCE hi = hi_ ? hi_ : GetModuleHandleW(nullptr);
     EnsureTipClass(hi);
     if (!tipHwnd_) {
-        tipHwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_TRANSPARENT,
-                                    kTipClass, L"",
-                                    WS_POPUP | WS_BORDER,
-                                    0, 0, 10, 10,
-                                    hwnd_, nullptr, hi, nullptr);
+        tipHwnd_ = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+            kTipClass, L"",
+            WS_POPUP | WS_BORDER,
+            0, 0, 10, 10,
+            hwnd_, nullptr, hi, nullptr);
     }
     if (!tipHwnd_) return;
+
+    // 已显示且文字未变 → 不重绘，避免闪烁
+    if (tipVisible_ && tipText_ == text && IsWindowVisible(tipHwnd_)) {
+        return;
+    }
     tipText_ = text;
-    SetWindowTextW(tipHwnd_, text.c_str());
 
     HDC hdc = GetDC(tipHwnd_);
     HFONT font = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -453,11 +489,17 @@ void App::ShowTooltip(int x, int y, const std::wstring& text) {
 
     int w = sz.cx + 16;
     int h = sz.cy + 12;
-    POINT pt = { x + 16, y + 8 };
+    POINT pt = { x + 18, y + 10 };
     ClientToScreen(hwnd_, &pt);
-    SetWindowPos(tipHwnd_, HWND_TOPMOST, pt.x, pt.y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    InvalidateRect(tipHwnd_, nullptr, TRUE);
-    // simple paint via WM_PAINT default - draw text ourselves
+
+    RECT work;
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    if (pt.x + w > work.right) pt.x = x - w - 8;
+    if (pt.y + h > work.bottom) pt.y = y - h - 8;
+
+    SetWindowPos(tipHwnd_, HWND_TOPMOST, pt.x, pt.y, w, h,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
     HDC tdc = GetDC(tipHwnd_);
     RECT rc; GetClientRect(tipHwnd_, &rc);
     FillRect(tdc, &rc, GetSysColorBrush(COLOR_INFOBK));
@@ -470,10 +512,13 @@ void App::ShowTooltip(int x, int y, const std::wstring& text) {
     SelectObject(tdc, o2);
     DeleteObject(f2);
     ReleaseDC(tipHwnd_, tdc);
+    tipVisible_ = true;
 }
 
 void App::HideTooltip() {
-    if (tipHwnd_) ShowWindow(tipHwnd_, SW_HIDE);
+    if (tipHwnd_ && IsWindowVisible(tipHwnd_)) ShowWindow(tipHwnd_, SW_HIDE);
+    tipVisible_ = false;
+    tipText_.clear();
 }
 
 void App::ShowNumberMenu(int x, int y) {
@@ -1034,23 +1079,26 @@ void App::OnMouseMove(int x, int y) {
     tme.hwndTrack = hwnd_;
     TrackMouseEvent(&tme);
 
-    int oldLeft = hoverLeft_;
-    int oldTop = hoverTop_;
-    hoverLeft_ = HitLeftButton(x, y);
-    hoverTop_ = HitTopButton(x, y);
+    int left = HitLeftButton(x, y);
+    int top = HitTopButton(x, y); // 顶部按钮本身有中文，不显示悬浮提示
 
-    if (hoverLeft_ >= 0) {
-        ShowTooltip(x, y, leftBtns_[hoverLeft_].tip);
-    } else if (hoverTop_ >= 0) {
-        ShowTooltip(x, y, topBtns_[hoverTop_].tip);
-    } else {
-        HideTooltip();
-    }
-
-    if (oldLeft != hoverLeft_ || oldTop != hoverTop_) {
+    // 仅在进入/离开左侧图标按钮时更新，避免每帧重绘导致闪烁
+    if (left != hoverLeft_) {
+        hoverLeft_ = left;
+        KillTimer(hwnd_, 1);
+        if (left >= 0) {
+            HideTooltip();
+            // 延迟约 0.35s 再显示，更稳定
+            SetTimer(hwnd_, 1, 350, nullptr);
+        } else {
+            HideTooltip();
+        }
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
+    hoverTop_ = top; // 不触发提示
 }
+
+// WM_TIMER handled in Handle()
 
 void App::CreateTabMenu(int tabIdx, int x, int y) {
     HMENU menu = CreatePopupMenu();
