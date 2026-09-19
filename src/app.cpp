@@ -342,6 +342,47 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }).detach();
         }
         return 0;
+    case WM_APP_UPDATE_FOUND: {
+        // 发现新版本：弹窗询问，确认后后台下载
+        std::wstring msg = std::wstring(L"发现新版本 v") + g_updateInfo.latestVersion +
+                           L"（当前 v" + APP_VERSION + L"）\n\n是否自动下载并更新？";
+        if (!g_updateInfo.notes.empty()) {
+            std::wstring notes = g_updateInfo.notes;
+            if (notes.size() > 300) notes = notes.substr(0, 300) + L"…";
+            msg += L"\n\n---- 更新说明 ----\n" + notes;
+        }
+        if (MessageBoxW(hwnd, msg.c_str(), L"软件更新",
+                        MB_OKCANCEL | MB_ICONINFORMATION) == IDOK) {
+            wchar_t tmp[MAX_PATH] = {};
+            GetTempPathW(MAX_PATH, tmp);
+            std::wstring dest = std::wstring(tmp) + L"ScreenshotTool_update.exe";
+            std::thread([hwnd, dest]() {
+                std::wstring err;
+                if (updater::DownloadUpdate(g_updateInfo.assetUrl, dest, err)) {
+                    g_updateDest = dest;
+                    PostMessageW(hwnd, WM_APP_UPDATE_READY, 0, 0);
+                } else {
+                    g_updateErr = err;
+                    PostMessageW(hwnd, WM_APP_UPDATE_FAILED, 0, 0);
+                }
+            }).detach();
+        }
+        return 0;
+    }
+    case WM_APP_UPDATE_READY:
+        // 新 exe 已下载完成：替换自身并重启新程序，成功后本进程退出
+        if (updater::ApplyUpdateAndRestart(g_updateDest)) {
+            DestroyWindow(hwnd);
+        } else {
+            MessageBoxW(hwnd, L"更新替换失败，文件未被改动，可稍后在设置中重试。",
+                        L"软件更新", MB_ICONWARNING);
+        }
+        return 0;
+    case WM_APP_UPDATE_FAILED:
+        MessageBoxW(hwnd, (L"下载新版本失败：\n" + g_updateErr +
+                           L"\n\n可稍后在设置中手动检测重试。").c_str(),
+                    L"软件更新", MB_ICONWARNING);
+        return 0;
     case WM_MOUSELEAVE:
         hoverLeft_ = -1;
         hoverTop_ = -1;
@@ -431,6 +472,8 @@ void App::OnCreate() {
     SelectTool(Tool::Select);
     ApplyTheme();
     UpdateStatus();
+    // 启动 3 秒后自动检测更新（WM_TIMER 里触发，结果经 WM_APP_UPDATE_FOUND 回主线程）
+    SetTimer(hwnd_, kTimerUpdateCheck, 3000, nullptr);
 }
 
 void App::BuildToolbars() {
