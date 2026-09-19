@@ -380,23 +380,41 @@ void App::DrawToolIcon(Graphics& g, const ToolButton& b, const RECT& rc,
         break;
     }
     case ID_TOOL_BRUSH: {
-        // 格式刷：竖直握柄 + 金属箍 + 下宽刷毛（非牙刷）
+        // 格式刷：原竖直造型顺时针约 45°，握柄朝右上、刷毛朝左下
+        const REAL deg = 3.14159265f / 4.0f; // 45°
+        const REAL cs = std::cos(deg), sn = std::sin(deg);
+        // 局部坐标：柄向上(-y)、毛向下(+y)；顺时针旋转后映射
+        auto rot = [&](REAL lx, REAL ly) -> PointF {
+            // 顺时针 45°: x' = x*cos + y*sin, y' = -x*sin + y*cos
+            REAL xr = lx * cs + ly * sn;
+            REAL yr = -lx * sn + ly * cs;
+            return PointF(cx + xr, cy + yr);
+        };
+        // 握柄（局部 y -11 → -3）
+        PointF h0 = rot(0.0f, -11.0f);
+        PointF h1 = rot(0.0f, -3.0f);
         Pen handle(ink, 3.0f);
         handle.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
-        g.DrawLine(&handle, cx, cy - 11.0f, cx, cy - 3.0f);
-        // 箍
-        g.FillRectangle(&br, cx - 4.5f, cy - 3.0f, 9.0f, 3.5f);
-        // 刷毛：下端略宽
-        PointF bristles[4] = {
-            PointF(cx - 4.5f, cy + 0.5f),
-            PointF(cx + 4.5f, cy + 0.5f),
-            PointF(cx + 6.5f, cy + 10.0f),
-            PointF(cx - 6.5f, cy + 10.0f)
-        };
+        g.DrawLine(&handle, h0.X, h0.Y, h1.X, h1.Y);
+        // 金属箍
+        PointF f0 = rot(-4.5f, -3.0f);
+        PointF f1 = rot(4.5f, -3.0f);
+        PointF f2 = rot(4.5f, 0.5f);
+        PointF f3 = rot(-4.5f, 0.5f);
+        PointF ferrule[4] = { f0, f1, f2, f3 };
+        g.FillPolygon(&br, ferrule, 4);
+        // 刷毛
+        PointF b0 = rot(-4.5f, 0.5f);
+        PointF b1 = rot(4.5f, 0.5f);
+        PointF b2 = rot(6.5f, 10.0f);
+        PointF b3 = rot(-6.5f, 10.0f);
+        PointF bristles[4] = { b0, b1, b2, b3 };
         g.FillPolygon(&br, bristles, 4);
         // 刷毛纹理
-        g.DrawLine(&penThin, cx - 2.0f, cy + 2.0f, cx - 3.5f, cy + 8.5f);
-        g.DrawLine(&penThin, cx + 2.0f, cy + 2.0f, cx + 3.5f, cy + 8.5f);
+        PointF t0 = rot(-2.0f, 2.0f), t1 = rot(-3.5f, 8.5f);
+        PointF t2 = rot(2.0f, 2.0f), t3 = rot(3.5f, 8.5f);
+        g.DrawLine(&penThin, t0.X, t0.Y, t1.X, t1.Y);
+        g.DrawLine(&penThin, t2.X, t2.Y, t3.X, t3.Y);
         break;
     }
     case ID_TOOL_VIEW: {

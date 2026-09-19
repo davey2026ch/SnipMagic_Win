@@ -8,7 +8,7 @@ using namespace Gdiplus;
 namespace {
 
 const int kW = 560;
-const int kH = 360;
+const int kH = 340;
 
 enum TextCtrlId {
     TXC_EDIT = 2001,
@@ -79,11 +79,9 @@ void RefreshSwatches(TextDlgState* st) {
 void UpdateBgColorVisibility(TextDlgState* st) {
     if (!st || !st->hwnd) return;
     BOOL transparent = SendMessageW(GetDlgItem(st->hwnd, TXC_TRANS), BM_GETCHECK, 0, 0) == BST_CHECKED;
-    // 未勾选「背景透明」时显示背景色
     int show = transparent ? SW_HIDE : SW_SHOW;
     if (st->bgColorBtn) ShowWindow(st->bgColorBtn, show);
     if (st->bgColorLabel) ShowWindow(st->bgColorLabel, show);
-    if (!transparent) RefreshSwatches(st);
 }
 
 LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -115,7 +113,7 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             return 0;
         }
         if (id == TXC_COLOR) {
-            auto r = ColorPicker::Show(hwnd, st->color, st->alpha);
+            auto r = ColorPicker::Show(hwnd, st->color, st->alpha, true);
             if (r.ok) {
                 st->color = r.color;
                 st->alpha = r.alpha;
@@ -124,7 +122,8 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             return 0;
         }
         if (id == TXC_BGCOLOR) {
-            auto r = ColorPicker::Show(hwnd, st->bgColor, 255);
+            // 与文字颜色同一弹窗逻辑（色轮 + 白色快捷键）
+            auto r = ColorPicker::Show(hwnd, st->bgColor, 255, true);
             if (r.ok) {
                 st->bgColor = r.color;
                 RefreshSwatches(st);
@@ -162,17 +161,10 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     case WM_DRAWITEM: {
         auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
         if (!st || !dis) return 0;
+        // 仅文字颜色为色块；背景颜色已是「设置」按钮
         if (dis->CtlID == TXC_COLOR) {
             Graphics g(dis->hDC);
             SolidBrush br(ToGpColor(st->color, st->alpha));
-            g.FillRectangle(&br, 0, 0,
-                            dis->rcItem.right - dis->rcItem.left,
-                            dis->rcItem.bottom - dis->rcItem.top);
-            return TRUE;
-        }
-        if (dis->CtlID == TXC_BGCOLOR) {
-            Graphics g(dis->hDC);
-            SolidBrush br(ToGpColor(st->bgColor, 255));
             g.FillRectangle(&br, 0, 0,
                             dis->rcItem.right - dis->rcItem.left,
                             dis->rcItem.bottom - dis->rcItem.top);
@@ -293,17 +285,18 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
 
     st.bgColorLabel = mkLabel(L"背景颜色", 180, 242, 80, 22);
     SetWindowLongPtrW(st.bgColorLabel, GWLP_ID, 0);
-    st.bgColorBtn = CreateWindowW(L"BUTTON", L"",
-                                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_NOTIFY,
-                                  260, 236, 52, 30, hwnd, Hm(TXC_BGCOLOR), hi, nullptr);
+    // 白色底时色块看不出来 → 用「设置」按钮打开同一颜色面板
+    st.bgColorBtn = CreateWindowW(L"BUTTON", L"设置",
+                                  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                  260, 236, 72, 30, hwnd, Hm(TXC_BGCOLOR), hi, nullptr);
 
-    // 紧凑：按钮紧贴颜色行，下方少留白
+    // 紧凑：按钮贴颜色行，底边少留白
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                            kW - 240, 285, 100, 34, hwnd, Hm(TXC_OK), hi, nullptr);
+                            kW - 240, 288, 100, 34, hwnd, Hm(TXC_OK), hi, nullptr);
     HWND cancel = CreateWindowW(L"BUTTON", L"取消",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                kW - 120, 285, 100, 34, hwnd, Hm(TXC_CANCEL), hi, nullptr);
+                                kW - 120, 288, 100, 34, hwnd, Hm(TXC_CANCEL), hi, nullptr);
 
     for (HWND c = GetWindow(hwnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
         if (font) SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);

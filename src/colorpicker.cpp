@@ -6,13 +6,31 @@ using namespace Gdiplus;
 namespace {
 
 const int kDlgW = 520;
-const int kDlgH = 640;
+const int kDlgH = 600;
 const int kWheelSize = 200;
 
 HICON g_cpBlankIcon = nullptr;
 
-HICON MakeBlankIconCP(int size) {
+HICON MakeWheelIcon(int size) {
     Bitmap bmp(size, size, PixelFormat32bppPARGB);
+    {
+        Graphics g(&bmp);
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.Clear(Color(255, 245, 245, 245));
+        REAL cx = size * 0.5f, cy = size * 0.5f;
+        REAL R = size * 0.42f;
+        // 迷你色相环（六色扇形）
+        for (int a = 0; a < 360; a += 30) {
+            COLORREF c = util::HSLtoRGB(static_cast<float>(a), 1.0f, 0.5f);
+            SolidBrush br(ToGpColor(c));
+            g.FillPie(&br, cx - R, cy - R, R * 2, R * 2, static_cast<REAL>(a), 30.0f);
+        }
+        // 中心白孔
+        SolidBrush hole(Color(255, 245, 245, 245));
+        g.FillEllipse(&hole, cx - R * 0.28f, cy - R * 0.28f, R * 0.56f, R * 0.56f);
+        Pen edge(Color(255, 90, 90, 90), 1.0f);
+        g.DrawEllipse(&edge, cx - R, cy - R, R * 2, R * 2);
+    }
     HBITMAP hbm = nullptr;
     bmp.GetHBITMAP(Color(0, 0, 0, 0), &hbm);
     if (!hbm) return nullptr;
@@ -25,6 +43,10 @@ HICON MakeBlankIconCP(int size) {
     DeleteObject(hbm);
     DeleteObject(mask);
     return icon;
+}
+
+HICON MakeBlankIconCP(int size) {
+    return MakeWheelIcon(size);
 }
 
 struct PickState {
@@ -68,8 +90,9 @@ enum {
     IDC_EYEDROP = 1003,
     IDC_OK = 1004,
     IDC_CANCEL = 1005,
-    IDC_SLIDER_BASE = 1100, // 0..4
-    IDC_EDIT_BASE = 1200,   // 0..4
+    IDC_WHITE = 1006,
+    IDC_SLIDER_BASE = 1100,
+    IDC_EDIT_BASE = 1200,
 };
 
 RECT WheelRect(HWND hwnd) {
@@ -467,6 +490,13 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             DestroyWindow(hwnd);
             return 0;
         }
+        if (id == IDC_WHITE) {
+            st->r = 255; st->g = 255; st->b = 255;
+            st->SyncFromRGB();
+            st->alpha = 255;
+            RefreshAll(st);
+            return 0;
+        }
         if (id == IDC_EYEDROP) {
             COLORREF c = st->Current();
             if (ColorPicker::Eyedropper(hwnd, c)) {
@@ -583,7 +613,7 @@ bool ColorPicker::Eyedropper(HWND owner, COLORREF& outColor) {
     return st.ok;
 }
 
-ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha) {
+ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, bool showQuickWhite) {
     HINSTANCE hi = GetModuleHandleW(nullptr);
     EnsurePickClasses(hi);
 
@@ -612,34 +642,44 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha) {
                                 owner, nullptr, hi, &st);
     if (!hwnd) return st.result;
     SetWindowTextW(hwnd, L"选择颜色");
-    SendMessageW(hwnd, WM_SETICON, ICON_BIG, 0);
-    SendMessageW(hwnd, WM_SETICON, ICON_SMALL, 0);
+    if (g_cpBlankIcon) {
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_cpBlankIcon));
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(g_cpBlankIcon));
+        SetClassLongPtrW(hwnd, GCLP_HICON, reinterpret_cast<LONG_PTR>(g_cpBlankIcon));
+        SetClassLongPtrW(hwnd, GCLP_HICONSM, reinterpret_cast<LONG_PTR>(g_cpBlankIcon));
+    }
 
-    HINSTANCE comctl = GetModuleHandleW(L"comctl32.dll");
-    // create child controls
     HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
 
-    // HEX 输入框与上方「透明度」滑杆等宽对齐
     RECT alphaSr = SliderRect(hwnd, 4);
     int hexW = alphaSr.right - alphaSr.left;
     HWND hex = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", st.hex.c_str(),
                                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                alphaSr.left, 462, hexW, 30, hwnd,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HEX)), hi, nullptr);
-    // 吸管：HEX 下方单独一行，同样对齐
     HWND eye = CreateWindowW(L"BUTTON", L"吸管（全屏取色）",
                              WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                              alphaSr.left, 502, hexW, 34, hwnd,
                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_EYEDROP)), hi, nullptr);
-    // 确定/取消紧挨吸管，减少下方留白
+
+    int btnY = kDlgH - 48;
+    int btnW = 90, btnH = 32;
+    int okX = kDlgW - 230;
+    HWND whiteBtn = nullptr;
+    if (showQuickWhite) {
+        whiteBtn = CreateWindowW(L"BUTTON", L"白色",
+                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                 okX - 100, btnY, btnW, btnH, hwnd,
+                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_WHITE)), hi, nullptr);
+    }
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                            kDlgW - 240, 548, 100, 34, hwnd,
+                            okX, btnY, btnW, btnH, hwnd,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OK)), hi, nullptr);
     HWND cancel = CreateWindowW(L"BUTTON", L"取消",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                kDlgW - 120, 548, 100, 34, hwnd,
+                                kDlgW - 120, btnY, btnW, btnH, hwnd,
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CANCEL)), hi, nullptr);
 
     for (int i = 0; i < 5; ++i) {
@@ -657,6 +697,7 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha) {
         SendMessageW(eye, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        if (whiteBtn) SendMessageW(whiteBtn, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         for (int i = 0; i < 5; ++i)
             SendMessageW(GetDlgItem(hwnd, IDC_EDIT_BASE + i), WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }

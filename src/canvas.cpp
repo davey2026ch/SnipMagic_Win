@@ -445,72 +445,68 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
 
     if (tool_ == Tool::View) return;
 
-    if (tool_ == Tool::Select) {
-        // 先命中控制点 → 缩放
-        if (doc_->GetSelected()) {
-            auto h = HitResizeHandle(ix, iy);
-            if (h != HandleId::None) {
-                dragMode_ = DragMode::Resize;
-                activeHandle_ = h;
-                resizeStartBounds_ = {};
-                doc_->GetSelected()->GetBounds(resizeStartBounds_);
-                return;
-            }
-        }
-        int hit = doc_->HitTest(ix, iy);
-        if (hit >= 0) {
-            doc_->ClearSelection();
+    if (tool_ == Tool::Select || tool_ == Tool::Text) {
+        auto beginResize = [&](Annotation* ann, int idx) {
+            auto h = HitHandleOnAnn(ann, ix, iy);
+            if (h == HandleId::None) return false;
             doc_->ClearRegion();
-            doc_->selectedIdx = hit;
-            doc_->annotations[hit]->selected = true;
-            // 若尚未选中，先选中以便立刻看到 8 个控制点
-            if (hit >= 0) {
-                auto h2 = HitResizeHandle(ix, iy);
-                if (h2 != HandleId::None) {
-                    dragMode_ = DragMode::Resize;
-                    activeHandle_ = h2;
-                    resizeStartBounds_ = {};
-                    doc_->GetSelected()->GetBounds(resizeStartBounds_);
-                    Refresh();
-                    return;
-                }
+            if (idx >= 0) {
+                doc_->ClearSelection();
+                doc_->selectedIdx = idx;
+                ann->selected = true;
             }
-            dragMode_ = DragMode::Move;
-            moveOriginX_ = ix;
-            moveOriginY_ = iy;
-            moveBackup_ = doc_->annotations[hit]->Clone();
-            doc_->PushUndo();
-            // 文字：点在框内且未拖动时，松开后打开编辑
-            pendingTextEdit_ = (doc_->annotations[hit]->type == AnnType::Text) ? hit : -1;
-        } else {
-            doc_->ClearSelection();
-            doc_->ClearRegion();
-            dragMode_ = DragMode::Rubber;
-        }
-        Refresh();
-        App::Instance().UpdateStatus();
-        return;
-    }
+            dragMode_ = DragMode::Resize;
+            activeHandle_ = h;
+            resizeStartBounds_ = {};
+            ann->GetBounds(resizeStartBounds_);
+            Refresh();
+            App::Instance().UpdateStatus();
+            return true;
+        };
 
-    if (tool_ == Tool::Text) {
+        // 控制点优先：选中对象 & 命中对象，都可直接拖角点
+        if (doc_->GetSelected() && beginResize(doc_->GetSelected(), doc_->selectedIdx))
+            return;
+
         int hit = doc_->HitTest(ix, iy);
+        if (hit >= 0 && beginResize(doc_->annotations[hit].get(), hit))
+            return;
+
+        if (tool_ == Tool::Select) {
+            if (hit >= 0) {
+                doc_->ClearSelection();
+                doc_->ClearRegion();
+                doc_->selectedIdx = hit;
+                doc_->annotations[hit]->selected = true;
+                dragMode_ = DragMode::Move;
+                moveOriginX_ = ix;
+                moveOriginY_ = iy;
+                moveBackup_ = doc_->annotations[hit]->Clone();
+                doc_->PushUndo();
+            } else {
+                doc_->ClearSelection();
+                doc_->ClearRegion();
+                dragMode_ = DragMode::Rubber;
+            }
+            Refresh();
+            App::Instance().UpdateStatus();
+            return;
+        }
+
+        // 文字工具
         if (hit >= 0 && doc_->annotations[hit]->type == AnnType::Text) {
             doc_->ClearSelection();
             doc_->ClearRegion();
             doc_->selectedIdx = hit;
             doc_->annotations[hit]->selected = true;
-            // 控制点 → 缩放
-            auto h = HitResizeHandle(ix, iy);
-            if (h != HandleId::None) {
-                dragMode_ = DragMode::Resize;
-                activeHandle_ = h;
-                resizeStartBounds_ = {};
-                doc_->GetSelected()->GetBounds(resizeStartBounds_);
-                Refresh();
-                return;
-            }
-            // 点在文字框内 → 编辑
             OpenTextEditor(hit);
+            return;
+        }
+        if (hit >= 0) {
+            doc_->ClearSelection();
+            doc_->selectedIdx = hit;
+            doc_->annotations[hit]->selected = true;
+            Refresh();
             return;
         }
         TextDialogResult tr = TextDialog::Show(hwnd_, Settings().drawColor);
@@ -535,7 +531,7 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
             int idx = static_cast<int>(doc_->annotations.size());
             doc_->annotations.push_back(std::move(t));
             doc_->selectedIdx = idx;
-            App::Instance().ShowStatusMessage(L"文字已添加：点文字框可编辑，拖角点调整宽高");
+            App::Instance().ShowStatusMessage(L"文字已添加：拖角点调宽高；点框内/双击可编辑");
         }
         Refresh();
         return;
@@ -677,25 +673,12 @@ void Canvas::OnMouseUp(int x, int y) {
     }
 
     if (dragMode_ == DragMode::Move) {
-        float dx = std::fabs(ix - startIx_);
-        float dy = std::fabs(iy - startIy_);
-        bool clicked = (dx < 3.0f && dy < 3.0f);
-        if (clicked && pendingTextEdit_ >= 0) {
-            // 点在文字框内 → 打开编辑
-            int idx = pendingTextEdit_;
-            pendingTextEdit_ = -1;
-            dragMode_ = DragMode::None;
-            OpenTextEditor(idx);
-            return;
-        }
-        pendingTextEdit_ = -1;
         dragMode_ = DragMode::None;
         Refresh();
         return;
     }
 
     if (dragMode_ == DragMode::Resize) {
-        pendingTextEdit_ = -1;
         dragMode_ = DragMode::None;
         Refresh();
         return;
@@ -717,7 +700,6 @@ void Canvas::OnMouseUp(int x, int y) {
         App::Instance().UpdateStatus();
         return;
     }
-    pendingTextEdit_ = -1;
     dragMode_ = DragMode::None;
 }
 
@@ -785,13 +767,12 @@ void Canvas::OnKeyDown(WPARAM vk) {
     }
 }
 
-Canvas::HandleId Canvas::HitResizeHandle(float ix, float iy) const {
-    Annotation* sel = doc_ ? doc_->GetSelected() : nullptr;
-    if (!sel) return HandleId::None;
+Canvas::HandleId Canvas::HitHandleOnAnn(const Annotation* ann, float ix, float iy) const {
+    if (!ann) return HandleId::None;
     RectF b;
-    sel->GetBounds(b);
+    ann->GetBounds(b);
     b.Inflate(3, 3);
-    const float tol = 8.0f;
+    const float tol = 10.0f;
     PointF pts[8] = {
         {b.X, b.Y},
         {b.X + b.Width / 2, b.Y},
@@ -807,6 +788,10 @@ Canvas::HandleId Canvas::HitResizeHandle(float ix, float iy) const {
             return static_cast<HandleId>(i);
     }
     return HandleId::None;
+}
+
+Canvas::HandleId Canvas::HitResizeHandle(float ix, float iy) const {
+    return HitHandleOnAnn(doc_ ? doc_->GetSelected() : nullptr, ix, iy);
 }
 
 void Canvas::ResizeSelected(HandleId h, float ix, float iy) {
