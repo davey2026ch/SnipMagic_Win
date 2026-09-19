@@ -73,6 +73,7 @@ int Document::HitTest(float x, float y) const {
 void Document::DrawAnnotations(Graphics& g, bool forExport) const {
     for (const auto& a : annotations) {
         a->Draw(g);
+        // 导出 / 查看态由调用方保证 selected 已清空；此处仍避免 forExport 时画控制点
         if (!forExport && a->selected) a->DrawSelection(g);
     }
 }

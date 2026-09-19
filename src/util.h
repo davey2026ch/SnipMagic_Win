@@ -66,6 +66,19 @@ inline std::wstring Format(const wchar_t* fmt, ...) {
     return buf;
 }
 
+// 去掉首尾空白（空格/Tab/换行/全角空格/零宽）
+inline std::wstring TrimToken(const std::wstring& s) {
+    if (s.empty()) return {};
+    auto isBlank = [](wchar_t c) -> bool {
+        return c == L' ' || c == L'\t' || c == L'\r' || c == L'\n' ||
+               c == L'\u00A0' || c == L'\u3000' || c == L'\u200B' || c == L'\uFEFF';
+    };
+    size_t b = 0, e = s.size();
+    while (b < e && isBlank(s[b])) ++b;
+    while (e > b && isBlank(s[e - 1])) --e;
+    return s.substr(b, e - b);
+}
+
 inline std::wstring ToHex(COLORREF c) {
     wchar_t buf[16];
     swprintf_s(buf, L"#%02X%02X%02X", GetRValue(c), GetGValue(c), GetBValue(c));

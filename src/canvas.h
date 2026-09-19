@@ -30,7 +30,7 @@ public:
     void SetDocument(Document* doc) { doc_ = doc; Refresh(); }
     Document* GetDocument() const { return doc_; }
 
-    void SetTool(Tool t) { tool_ = t; dragMode_ = DragMode::None; Refresh(); }
+    void SetTool(Tool t);
     Tool GetTool() const { return tool_; }
 
     void SetDrawColor(COLORREF c) { color_ = c; }

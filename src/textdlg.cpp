@@ -27,6 +27,9 @@ struct TextDlgState {
     COLORREF color = RGB(255, 0, 0);
     BYTE alpha = 255;
     COLORREF bgColor = RGB(255, 255, 255);
+    // 文字颜色的默认值：背景颜色取色器打开时与其保持一致
+    COLORREF textColorDefault = RGB(255, 0, 0);
+    BYTE textColorDefaultAlpha = 255;
     HWND colorBtn = nullptr;
     HWND bgColorBtn = nullptr;
     HWND bgColorLabel = nullptr;
@@ -58,22 +61,12 @@ HICON MakeBlankIcon(int size) {
 }
 
 void PaintSwatch(HWND btn, COLORREF c, BYTE alpha) {
-    if (!btn) return;
-    HDC hdc = GetDC(btn);
-    if (!hdc) return;
-    RECT rc;
-    GetClientRect(btn, &rc);
-    Graphics g(hdc);
-    SolidBrush br(ToGpColor(c, alpha));
-    g.FillRectangle(&br, 0, 0, rc.right, rc.bottom);
-    ReleaseDC(btn, hdc);
+    // 颜色入口统一为「设置」按钮，不再绘制色块（白色时色块不可见）
+    (void)btn; (void)c; (void)alpha;
 }
 
 void RefreshSwatches(TextDlgState* st) {
-    if (!st) return;
-    PaintSwatch(st->colorBtn, st->color, st->alpha);
-    bool showBg = st->bgColorBtn && IsWindowVisible(st->bgColorBtn);
-    if (showBg) PaintSwatch(st->bgColorBtn, st->bgColor, 255);
+    (void)st;
 }
 
 void UpdateBgColorVisibility(TextDlgState* st) {
@@ -126,7 +119,12 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                     RefreshSwatches(st);
                 }
             } else {
-                auto r = ColorPicker::Show(hwnd, st->bgColor, 255, true);
+                // 背景颜色取色器打开时的明度/RGB/透明度/HEX
+                // 与文字颜色设置按钮一致（使用文字颜色默认值）
+                auto r = ColorPicker::Show(hwnd,
+                                           st->textColorDefault,
+                                           st->textColorDefaultAlpha,
+                                           true);
                 s_inColor = false;
                 if (r.ok) {
                     st->bgColor = r.color;
@@ -163,20 +161,9 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         }
         return 0;
     }
-    case WM_DRAWITEM: {
-        auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
-        if (!st || !dis) return 0;
-        // 仅文字颜色为色块；背景颜色已是「设置」按钮
-        if (dis->CtlID == TXC_COLOR) {
-            Graphics g(dis->hDC);
-            SolidBrush br(ToGpColor(st->color, st->alpha));
-            g.FillRectangle(&br, 0, 0,
-                            dis->rcItem.right - dis->rcItem.left,
-                            dis->rcItem.bottom - dis->rcItem.top);
-            return TRUE;
-        }
+    case WM_DRAWITEM:
+        // 颜色入口均为「设置」普通按钮，无需 owner-draw 色块
         return 0;
-    }
     case WM_CLOSE:
         if (st) { st->result.ok = false; st->done = true; DestroyWindow(hwnd); }
         return 0;
@@ -212,9 +199,13 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
     EnsureClass(hi);
 
     TextDlgState st;
+    // 文字颜色默认值（插入时为 initialColor + 当前画笔透明度）
+    st.textColorDefault = initialColor;
+    st.textColorDefaultAlpha = Settings().drawAlpha;
     st.color = existing ? existing->style.color : initialColor;
     st.alpha = existing ? existing->style.alpha : Settings().drawAlpha;
-    st.bgColor = existing ? existing->bgColor : RGB(255, 255, 255);
+    // 背景色默认值与文字颜色默认值保持一致
+    st.bgColor = existing ? existing->bgColor : initialColor;
     st.staticBrush = CreateSolidBrush(RGB(250, 250, 250));
 
     int sw = GetSystemMetrics(SM_CXSCREEN);
@@ -282,18 +273,18 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
     bool transDefault = existing ? existing->transparentBg : true;
     SendMessageW(trans, BM_SETCHECK, transDefault ? BST_CHECKED : BST_UNCHECKED, 0);
 
-    // 文字颜色 / 背景颜色：同一套 ColorPicker 逻辑
+    // 文字颜色 / 背景颜色：同一套「设置」按钮 + ColorPicker，逻辑一致
+    // （不用色块，避免白色时用户找不到入口）
     mkLabel(L"文字颜色", 20, 242, 80, 22);
-    st.colorBtn = CreateWindowW(L"BUTTON", L"",
-                                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_NOTIFY,
-                                100, 236, 52, 30, hwnd, Hm(TXC_COLOR), hi, nullptr);
+    st.colorBtn = CreateWindowW(L"BUTTON", L"设置",
+                                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                100, 236, 72, 30, hwnd, Hm(TXC_COLOR), hi, nullptr);
 
-    st.bgColorLabel = mkLabel(L"背景颜色", 180, 242, 80, 22);
+    st.bgColorLabel = mkLabel(L"背景颜色", 190, 242, 80, 22);
     SetWindowLongPtrW(st.bgColorLabel, GWLP_ID, 0);
-    // 白色底时色块看不出来 → 用「设置」按钮打开同一颜色面板
     st.bgColorBtn = CreateWindowW(L"BUTTON", L"设置",
                                   WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                  260, 236, 72, 30, hwnd, Hm(TXC_BGCOLOR), hi, nullptr);
+                                  270, 236, 72, 30, hwnd, Hm(TXC_BGCOLOR), hi, nullptr);
 
     // 紧凑：按钮贴颜色行，底边少留白
     HWND ok = CreateWindowW(L"BUTTON", L"确定",

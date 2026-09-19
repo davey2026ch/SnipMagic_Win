@@ -18,12 +18,18 @@ add_executable(ScreenshotTool WIN32
     src/overlay.cpp
     src/canvas.h
     src/canvas.cpp
+    src/compareview.h
+    src/compareview.cpp
     src/colorpicker.h
     src/colorpicker.cpp
     src/textdlg.h
     src/textdlg.cpp
     src/settingsdlg.h
     src/settingsdlg.cpp
+    src/netutil.h
+    src/ziputil.h
+    src/extract.h
+    src/extract.cpp
     src/app.h
     src/app.cpp
 )
@@ -40,5 +46,5 @@ if(MSVC)
 endif()
 
 target_link_libraries(ScreenshotTool PRIVATE
-    user32 gdi32 gdiplus comctl32 comdlg32 shell32 ole32 shlwapi uxtheme msimg32 imm32
+    user32 gdi32 gdiplus comctl32 comdlg32 shell32 ole32 oleaut32 shlwapi uxtheme msimg32 imm32 winhttp crypt32 uuid
 )

@@ -10,6 +10,10 @@ public:
     bool IsOpen() const { return hwnd_ != nullptr; }
     void Cancel();
 
+    // 按钮 / 快捷键共用：截图前强制隐藏本进程窗口
+    static void ForceHideForCapture(HWND owner);
+    static void UncloakAndShow(HWND hwnd);
+
     // Result access
     bool HasResult() const { return hasResult_; }
     std::unique_ptr<Gdiplus::Bitmap> TakeResult();

@@ -3,7 +3,10 @@
 #include "settingsdlg.h"
 #include "overlay.h"
 #include "colorpicker.h"
+#include "compareview.h"
+#include "extract.h"
 #include "version.h"
+#include <winuser.h>
 
 using namespace Gdiplus;
 
@@ -18,6 +21,55 @@ const wchar_t* kTipClass = L"ScreenshotToolTooltip";
 HICON g_appIcon = nullptr;
 HICON g_appIconSm = nullptr;
 HICON g_blankIcon = nullptr;
+
+// 快捷键被其他程序占用时：用低级键盘钩子强制接管
+// 用 void* 存句柄，避免个别 SDK/宏环境下 HHOOK 不可见
+void* g_kbHook = nullptr;
+bool g_useHotkeyHook = false;
+
+bool HotkeyModifiersDown(UINT mods) {
+    if ((mods & MOD_CONTROL) && !(GetAsyncKeyState(VK_CONTROL) & 0x8000)) return false;
+    if ((mods & MOD_SHIFT) && !(GetAsyncKeyState(VK_SHIFT) & 0x8000)) return false;
+    if ((mods & MOD_ALT) && !(GetAsyncKeyState(VK_MENU) & 0x8000)) return false;
+    if ((mods & MOD_WIN) &&
+        !(GetAsyncKeyState(VK_LWIN) & 0x8000) &&
+        !(GetAsyncKeyState(VK_RWIN) & 0x8000)) {
+        return false;
+    }
+    return true;
+}
+
+void RemoveHotkeyHook() {
+    g_useHotkeyHook = false;
+    if (g_kbHook) {
+        UnhookWindowsHookEx(reinterpret_cast<HHOOK>(g_kbHook));
+        g_kbHook = nullptr;
+    }
+}
+
+LRESULT CALLBACK HotkeyKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION && g_useHotkeyHook &&
+        (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) && lParam) {
+        const auto* ks = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+        const auto& s = Settings();
+        if (ks->vkCode == s.hotkeyVk && HotkeyModifiersDown(s.hotkeyModifiers)) {
+            HWND hwnd = App::Instance().Hwnd();
+            if (hwnd) {
+                // 强制接管：吞掉按键，占用该快捷键的其他程序不会收到
+                PostMessageW(hwnd, WM_HOTKEY, static_cast<WPARAM>(kHotkeyId), 0);
+            }
+            return 1;
+        }
+    }
+    return CallNextHookEx(reinterpret_cast<HHOOK>(g_kbHook), nCode, wParam, lParam);
+}
+
+void InstallHotkeyHook() {
+    RemoveHotkeyHook();
+    g_useHotkeyHook = true;
+    g_kbHook = SetWindowsHookExW(WH_KEYBOARD_LL, HotkeyKeyboardProc,
+                                 GetModuleHandleW(nullptr), 0);
+}
 
 HICON MakeScreenshotIcon(int size) {
     Bitmap bmp(size, size, PixelFormat32bppPARGB);
@@ -229,6 +281,9 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_APP_CAPTURE_DONE:
         OnCaptureFinished();
         return 0;
+    case WM_APP_BEGIN_CAPTURE:
+        StartCaptureNow();
+        return 0;
     case WM_LBUTTONDOWN:
         OnLButtonDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
@@ -239,8 +294,8 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         OnMouseMove(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
     case WM_TIMER:
-        if (wParam == 1) {
-            KillTimer(hwnd, 1);
+        if (wParam == kTimerTooltip) {
+            KillTimer(hwnd, kTimerTooltip);
             if (hoverLeft_ >= 0 && hoverLeft_ < static_cast<int>(leftBtns_.size())) {
                 POINT pt;
                 GetCursorPos(&pt);
@@ -250,12 +305,15 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     ShowTooltip(pt.x, pt.y, leftBtns_[hoverLeft_].tip);
                 }
             }
+        } else if (wParam == kTimerBeginCapture) {
+            KillTimer(hwnd, kTimerBeginCapture);
+            StartCaptureNow();
         }
         return 0;
     case WM_MOUSELEAVE:
         hoverLeft_ = -1;
         hoverTop_ = -1;
-        KillTimer(hwnd, 1);
+        KillTimer(hwnd, kTimerTooltip);
         HideTooltip();
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
@@ -270,7 +328,37 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_ERASEBKGND:
         return 1;
     case WM_CLOSE:
-        // Minimize to taskbar by default; only exit via tray/right-click or Alt+F4 with confirm
+        // 关闭主窗口：有截图页签时先问是否保存，避免直接丢掉
+        if (!docs_.empty()) {
+            for (;;) {
+                int r = MessageBoxW(hwnd,
+                                    L"还有打开的截图页签，关闭前是否保存？\n\n"
+                                    L"是 = 选择路径保存全部后退出\n"
+                                    L"否 = 不保存直接退出\n"
+                                    L"取消 = 不退出，留在当前界面",
+                                    APP_NAME, MB_YESNOCANCEL | MB_ICONQUESTION);
+                if (r == IDCANCEL) {
+                    // 明确取消：不退出
+                    return 0;
+                }
+                if (r == IDNO) {
+                    DestroyWindow(hwnd);
+                    return 0;
+                }
+                if (r == IDYES) {
+                    // 仅当保存流程真正完成才退出；取消路径/格式选择则不关
+                    if (SaveAllDocs()) {
+                        DestroyWindow(hwnd);
+                        return 0;
+                    }
+                    ShowWindow(hwnd_, SW_SHOW);
+                    SetForegroundWindow(hwnd_);
+                    ShowStatusMessage(L"已取消保存路径选择，程序未退出，请重新选择");
+                    continue;
+                }
+                return 0;
+            }
+        }
         if (MessageBoxW(hwnd,
                         L"确定退出截图工具吗？\n（最小化可继续在后台待命）",
                         APP_NAME, MB_YESNO | MB_ICONQUESTION) == IDYES) {
@@ -279,6 +367,7 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     case WM_DESTROY:
         UnregisterHotKey(hwnd, kHotkeyId);
+        RemoveHotkeyHook();
         PostQuitMessage(0);
         return 0;
     case WM_DPICHANGED: {
@@ -299,6 +388,7 @@ void App::OnCreate() {
     dpi_ = util::GetDpiForWindowSafe(hwnd_);
     BuildToolbars();
     Canvas::Instance().Create(hwnd_, hi_);
+    CompareView::Instance().Create(hwnd_, hi_);
     status_ = CreateWindowExW(0, STATUSCLASSNAMEW, L"",
                               WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
                               0, 0, 0, 0, hwnd_, nullptr, hi_, nullptr);
@@ -321,6 +411,8 @@ void App::BuildToolbars() {
     };
     addTop(ID_CMD_CAPTURE, L"截图");
     addTop(ID_CMD_MOSAIC, L"马赛克");
+    addTop(ID_CMD_EXTRACT, L"提取内容");
+    addTop(ID_CMD_MAGIC_ERASE, L"魔法消除");
     addTop(ID_CMD_SETTINGS, L"设置");
     addTop(ID_CMD_SAVE_ALL, L"全部保存");
     addTop(ID_CMD_UNDO, L"撤销");
@@ -329,7 +421,7 @@ void App::BuildToolbars() {
     struct L { int id; const wchar_t* tip; Tool tool; bool toggle; bool num; };
     const L left[] = {
         { ID_TOOL_SELECT,   L"选择（框选区域）", Tool::Select, true, false },
-        { ID_TOOL_BRUSH,    L"笔刷",            Tool::Brush, true, false },
+        { ID_TOOL_BRUSH,    L"笔刷（半透明高亮）", Tool::Brush, true, false },
         { ID_TOOL_VIEW,     L"查看模式",         Tool::View, true, false },
         { ID_TOOL_TEXT,     L"插入文字",         Tool::Text, true, false },
         { ID_TOOL_ARROW,    L"箭头",            Tool::Arrow, true, false },
@@ -665,6 +757,9 @@ void App::LayoutChildren() {
         ly += lh + lgap;
     }
 
+    // compare-mode controls: right-aligned on top bar
+    LayoutCompareButtons();
+
     int canvasTop = topH_;
     int canvasLeft = leftW_;
     int canvasRight = rc.right;
@@ -672,13 +767,66 @@ void App::LayoutChildren() {
     if (canvasBottom < canvasTop + 40) canvasBottom = canvasTop + 40;
 
     HWND canvas = Canvas::Instance().Hwnd();
-    if (canvas) {
-        MoveWindow(canvas, canvasLeft, canvasTop,
-                   canvasRight - canvasLeft,
+    HWND compareHwnd = CompareView::Instance().Hwnd();
+    int splitGap = util::Scale(4, dpi_);
+
+    if (compareMode_ && compareHwnd) {
+        int totalW = canvasRight - canvasLeft;
+        int leftW = totalW / 2 - splitGap / 2;
+        int rightW = totalW - leftW - splitGap;
+        if (leftW < 80) leftW = 80;
+        if (rightW < 80) rightW = 80;
+        if (canvas) {
+            MoveWindow(canvas, canvasLeft, canvasTop, leftW,
+                       canvasBottom - canvasTop, TRUE);
+            Canvas::Instance().UpdateScrollBars();
+            Canvas::Instance().Refresh();
+        }
+        MoveWindow(compareHwnd, canvasLeft + leftW + splitGap, canvasTop, rightW,
                    canvasBottom - canvasTop, TRUE);
-        Canvas::Instance().UpdateScrollBars();
-        Canvas::Instance().Refresh();
+        CompareView::Instance().ShowPane(true);
+        CompareView::Instance().UpdateScrollBars();
+        CompareView::Instance().Refresh();
+    } else {
+        if (canvas) {
+            MoveWindow(canvas, canvasLeft, canvasTop,
+                       canvasRight - canvasLeft,
+                       canvasBottom - canvasTop, TRUE);
+            Canvas::Instance().UpdateScrollBars();
+            Canvas::Instance().Refresh();
+        }
+        if (compareHwnd) CompareView::Instance().ShowPane(false);
     }
+}
+
+void App::LayoutCompareButtons() {
+    compareBtnsBuilt_ = false;
+    syncScrollRc_ = {};
+    exitCompareRc_ = {};
+    if (!compareMode_) return;
+
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    int bh = util::Scale(30, dpi_);
+    int by = (topH_ - bh) / 2;
+    int pad = util::Scale(8, dpi_);
+    int gap = util::Scale(12, dpi_);
+    int exitW = util::Scale(88, dpi_);
+    // label「同步滚动」+ switch on the right
+    int syncW = util::Scale(120, dpi_);
+
+    int right = rc.right - pad;
+    exitCompareRc_ = { right - exitW, by, right, by + bh };
+    syncScrollRc_ = { exitCompareRc_.left - gap - syncW, by, exitCompareRc_.left - gap, by + bh };
+    compareBtnsBuilt_ = true;
+}
+
+void App::HitTestCompareControls(int x, int y, int& outId) const {
+    outId = 0;
+    if (!compareMode_ || !compareBtnsBuilt_) return;
+    POINT pt = { x, y };
+    if (PtInRect(&syncScrollRc_, pt)) outId = ID_CMD_SYNC_SCROLL;
+    else if (PtInRect(&exitCompareRc_, pt)) outId = ID_CMD_EXIT_COMPARE;
 }
 
 void App::OnSize() {
@@ -785,21 +933,90 @@ void App::OnPaint() {
         drawBtn(leftBtns_[i], active, static_cast<int>(i) == hoverLeft_, true);
     }
 
+    // compare-mode right-side controls
+    if (compareMode_ && compareBtnsBuilt_) {
+        // 「同步滚动」标签 + 开关（开=启用，关=不启用；默认开）
+        {
+            const RECT& r = syncScrollRc_;
+            int trackW = util::Scale(40, dpi_);
+            int trackH = util::Scale(20, dpi_);
+            int trackX = r.right - util::Scale(8, dpi_) - trackW;
+            int trackY = r.top + (r.bottom - r.top - trackH) / 2;
+            int labelRight = trackX - util::Scale(10, dpi_);
+
+            // label
+            SolidBrush labelBr(ToGpColor(s.TextColor()));
+            StringFormat lfmt;
+            lfmt.SetAlignment(StringAlignmentNear);
+            lfmt.SetLineAlignment(StringAlignmentCenter);
+            RectF lrect(static_cast<REAL>(r.left), static_cast<REAL>(r.top),
+                        static_cast<REAL>(labelRight - r.left), static_cast<REAL>(r.bottom - r.top));
+            g.DrawString(L"同步滚动", -1, &font, lrect, &lfmt, &labelBr);
+
+            // switch track
+            REAL rx = static_cast<REAL>(trackX);
+            REAL ry = static_cast<REAL>(trackY);
+            REAL rw = static_cast<REAL>(trackW);
+            REAL rh = static_cast<REAL>(trackH);
+            Color trackFill = compareSyncScroll_
+                ? ToGpColor(s.themeColor)
+                : ToGpColor(s.IsDarkTheme() ? RGB(90, 90, 90) : RGB(180, 180, 180));
+            SolidBrush trackBr(trackFill);
+            GraphicsPath track;
+            REAL rr = rh * 0.5f;
+            track.AddArc(rx, ry, rh, rh, 90.0f, 180.0f);
+            track.AddArc(rx + rw - rh, ry, rh, rh, 270.0f, 180.0f);
+            track.CloseFigure();
+            g.FillPath(&trackBr, &track);
+
+            // switch knob
+            REAL knob = rh - 4.0f;
+            REAL kx = compareSyncScroll_ ? (rx + rw - knob - 2.0f) : (rx + 2.0f);
+            REAL ky = ry + 2.0f;
+            SolidBrush knobBr(Color(255, 255, 255, 255));
+            g.FillEllipse(&knobBr, kx, ky, knob, knob);
+        }
+
+        // 「退出对比」按钮
+        {
+            const RECT& r = exitCompareRc_;
+            int bw = r.right - r.left;
+            int bh = r.bottom - r.top;
+            Color fill = ToGpColor(s.IsDarkTheme() ? RGB(50, 50, 50) : RGB(245, 245, 245));
+            SolidBrush br(fill);
+            g.FillRectangle(&br, r.left, r.top, bw, bh);
+            Pen p(ToGpColor(s.BorderColor()), 1);
+            g.DrawRectangle(&p, r.left, r.top, bw - 1, bh - 1);
+            SolidBrush tbr(ToGpColor(s.TextColor()));
+            StringFormat fmt;
+            fmt.SetAlignment(StringAlignmentCenter);
+            fmt.SetLineAlignment(StringAlignmentCenter);
+            RectF layout(static_cast<REAL>(r.left), static_cast<REAL>(r.top),
+                         static_cast<REAL>(bw), static_cast<REAL>(bh));
+            g.DrawString(L"退出对比", -1, &font, layout, &fmt, &tbr);
+        }
+    }
+
     // tab bar background
     int tabTop = h - statusH_ - tabH_;
     SolidBrush tabBg(ToGpColor(s.IsDarkTheme() ? RGB(40, 40, 40) : RGB(230, 230, 230)));
     g.FillRectangle(&tabBg, 0, tabTop, w, tabH_);
     g.DrawLine(&borderPen, 0, tabTop, w, tabTop);
 
-    // tabs
+    // tabs — width is 50% of the previous 72px
     int tx = leftW_ + 8;
     int ty = tabTop + 4;
     int th = tabH_ - 8;
+    int tabW = util::Scale(36, dpi_);
     for (size_t i = 0; i < docs_.size(); ++i) {
-        int tw = util::Scale(72, dpi_);
+        int tw = tabW;
         RECT trc = { tx, ty, tx + tw, ty + th };
         bool active = static_cast<int>(i) == activeIdx_;
-        Color tc = active ? ToGpColor(s.themeColor) : ToGpColor(s.IsDarkTheme() ? RGB(55, 55, 55) : RGB(250, 250, 250));
+        bool inCompare = compareMode_ &&
+                         (static_cast<int>(i) == activeIdx_ || static_cast<int>(i) == compareIdx_);
+        Color tc = active ? ToGpColor(s.themeColor)
+                          : (inCompare ? ToGpColor(s.IsDarkTheme() ? RGB(70, 90, 70) : RGB(210, 230, 210))
+                                       : ToGpColor(s.IsDarkTheme() ? RGB(55, 55, 55) : RGB(250, 250, 250)));
         SolidBrush tb(tc);
         g.FillRectangle(&tb, trc.left, trc.top, tw, th);
         Pen tp(ToGpColor(s.BorderColor()), 1);
@@ -854,6 +1071,8 @@ void App::OnCommand(int id) {
     switch (id) {
     case ID_CMD_CAPTURE: StartCapture(); break;
     case ID_CMD_MOSAIC: Canvas::Instance().ApplyMosaicToSelection(); break;
+    case ID_CMD_EXTRACT: extract::RunExtractFlow(hwnd_, ActiveDoc()); break;
+    case ID_CMD_MAGIC_ERASE: extract::RunMagicErase(hwnd_, ActiveDoc()); break;
     case ID_CMD_SETTINGS: OpenSettings(); break;
     case ID_CMD_SAVE_ALL: SaveAllDocs(); break;
     case ID_CMD_UNDO: Canvas::Instance().Undo(); break;
@@ -862,14 +1081,30 @@ void App::OnCommand(int id) {
     case ID_CMD_COLOR: OpenColorPicker(); break;
     case ID_CMD_COPY: Canvas::Instance().CopySelection(); break;
     case ID_CMD_PASTE: Canvas::Instance().PasteFromBuffer(); break;
-    case ID_MENU_CLOSE: if (activeIdx_ >= 0) CloseDoc(activeIdx_); break;
-    case ID_MENU_SAVE: if (activeIdx_ >= 0) SaveDoc(activeIdx_); break;
+    case ID_CMD_SYNC_SCROLL: ToggleCompareSyncScroll(); break;
+    case ID_CMD_EXIT_COMPARE: ExitCompare(); break;
+    case ID_MENU_COMPARE:
+        if (contextTabIdx_ >= 0) StartCompare(contextTabIdx_);
+        break;
+    case ID_MENU_CLOSE: {
+        int idx = contextTabIdx_ >= 0 ? contextTabIdx_ : activeIdx_;
+        if (idx >= 0) CloseDoc(idx);
+        contextTabIdx_ = -1;
+        break;
+    }
+    case ID_MENU_SAVE: {
+        int idx = contextTabIdx_ >= 0 ? contextTabIdx_ : activeIdx_;
+        if (idx >= 0) SaveDoc(idx);
+        contextTabIdx_ = -1;
+        break;
+    }
     case ID_MENU_SAVE_ALL: SaveAllDocs(); break;
     case ID_MENU_CLOSE_OTHERS: {
-        int keep = activeIdx_;
+        int keep = contextTabIdx_ >= 0 ? contextTabIdx_ : activeIdx_;
         for (int i = static_cast<int>(docs_.size()) - 1; i >= 0; --i) {
             if (i != keep) CloseDoc(i);
         }
+        contextTabIdx_ = -1;
         break;
     }
     default:
@@ -894,15 +1129,63 @@ void App::OnKeyDown(WPARAM vk) {
 }
 
 void App::OnHotkey() {
+    // 与点击「截图」按钮走完全相同的 StartCapture
     StartCapture();
 }
 
 void App::StartCapture() {
     if (CaptureOverlay::Instance().IsOpen()) return;
-    // 截图前隐藏工具提示，避免悬浮提示框被截进画面
+    if (capturePending_) return;
+
+    // 按钮 / 快捷键同一路径：
+    // 1) 立刻隐藏（用户马上看不到窗口）
+    // 2) 异步 + 短延迟后再截，等系统把窗口真正从屏幕拿掉
+    // 同步在 WM_HOTKEY 里直接 BitBlt 时，窗口常还在，会被截进去
+    BeginCaptureHide();
+    capturePending_ = true;
+    if (hwnd_) {
+        PostMessageW(hwnd_, WM_APP_BEGIN_CAPTURE, 0, 0);
+        SetTimer(hwnd_, kTimerBeginCapture, 150, nullptr);
+    } else {
+        StartCaptureNow();
+    }
+}
+
+void App::BeginCaptureHide() {
     HideTooltip();
     if (tipHwnd_ && IsWindow(tipHwnd_)) ShowWindow(tipHwnd_, SW_HIDE);
-    Sleep(30);
+    // 快速隐藏：立刻从屏幕消失，完整等待放在 StartCaptureNow/Start 里
+    if (hwnd_ && IsWindow(hwnd_)) {
+        if (GetForegroundWindow() == hwnd_) {
+            INPUT inp[2] = {};
+            inp[0].type = INPUT_KEYBOARD;
+            inp[0].ki.wVk = VK_MENU;
+            inp[1].type = INPUT_KEYBOARD;
+            inp[1].ki.wVk = VK_MENU;
+            inp[1].ki.dwFlags = KEYEVENTF_KEYUP;
+            SendInput(2, inp, sizeof(INPUT));
+            HWND shell = GetShellWindow();
+            if (shell && shell != hwnd_) SetForegroundWindow(shell);
+        }
+        ShowWindow(hwnd_, SW_HIDE);
+        SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
+                     SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+    }
+    EnumWindows([](HWND h, LPARAM) -> BOOL {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        if (pid == GetCurrentProcessId() && IsWindowVisible(h)) {
+            ShowWindow(h, SW_HIDE);
+        }
+        return TRUE;
+    }, 0);
+}
+
+void App::StartCaptureNow() {
+    if (hwnd_) KillTimer(hwnd_, kTimerBeginCapture);
+    capturePending_ = false;
+    if (CaptureOverlay::Instance().IsOpen()) return;
+    // Start 内部会 ForceHideForCapture：等窗口确认不可见后再 BitBlt
     CaptureOverlay::Instance().Start(hwnd_);
 }
 
@@ -934,6 +1217,17 @@ void App::ActivateDoc(int idx) {
     if (idx < 0 || idx >= static_cast<int>(docs_.size())) return;
     activeIdx_ = idx;
     Canvas::Instance().SetDocument(docs_[idx].get());
+    if (compareMode_) {
+        // left pane is always the active tab; if it collides with compare target, leave compare
+        if (compareIdx_ == activeIdx_) {
+            ExitCompare();
+        } else if (compareIdx_ >= 0 && compareIdx_ < static_cast<int>(docs_.size())) {
+            CompareView::Instance().SetDocument(docs_[compareIdx_].get());
+            if (compareSyncScroll_) OnMainCanvasScrolled();
+        } else {
+            ExitCompare();
+        }
+    }
     UpdateTabBar();
     UpdateTitle();
     UpdateStatus();
@@ -942,46 +1236,87 @@ void App::ActivateDoc(int idx) {
 
 void App::CloseDoc(int idx) {
     if (idx < 0 || idx >= static_cast<int>(docs_.size())) return;
+
+    // 关闭单个截图页签前提示是否保存
+    const std::wstring name = docs_[idx]->name;
+    int choice = MessageBoxW(hwnd_,
+                             (L"关闭「" + name + L"」前是否保存图片？\n\n"
+                              L"是 = 保存并关闭\n否 = 不保存直接关闭\n取消 = 不关闭").c_str(),
+                             APP_NAME, MB_YESNOCANCEL | MB_ICONQUESTION);
+    if (choice == IDCANCEL) return;
+    if (choice == IDYES) {
+        if (!SaveDoc(idx)) {
+            // 用户取消了保存对话框，或保存失败 → 不关闭
+            return;
+        }
+    }
+
+    if (compareMode_) {
+        if (idx == compareIdx_ || idx == activeIdx_) {
+            ExitCompare();
+        } else if (idx < compareIdx_) {
+            --compareIdx_;
+        }
+    }
+
     docs_.erase(docs_.begin() + idx);
     if (activeIdx_ >= static_cast<int>(docs_.size()))
         activeIdx_ = static_cast<int>(docs_.size()) - 1;
+    else if (activeIdx_ > idx)
+        --activeIdx_;
+
     if (activeIdx_ >= 0)
         Canvas::Instance().SetDocument(docs_[activeIdx_].get());
     else
         Canvas::Instance().SetDocument(nullptr);
+
+    if (compareMode_) {
+        if (compareIdx_ >= 0 && compareIdx_ < static_cast<int>(docs_.size()))
+            CompareView::Instance().SetDocument(docs_[compareIdx_].get());
+        else
+            ExitCompare();
+    }
+
     UpdateTabBar();
     UpdateTitle();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void App::SaveDoc(int idx) {
-    if (idx < 0 || idx >= static_cast<int>(docs_.size())) return;
+bool App::SaveDoc(int idx) {
+    if (idx < 0 || idx >= static_cast<int>(docs_.size())) return false;
     Document* d = docs_[idx].get();
     std::wstring def = d->name + L".png";
     std::wstring path = util::OpenSaveDialog(
         hwnd_, true,
         L"PNG 图片\0*.png\0JPG 图片\0*.jpg\0所有文件\0*.*\0",
         L"png", def.c_str(), L"保存截图");
-    if (path.empty()) return;
+    if (path.empty()) return false;
     bool jpg = path.size() > 4 && _wcsicmp(path.c_str() + path.size() - 4, L".jpg") == 0;
     if (d->SaveAs(path, jpg)) {
         ShowStatusMessage(L"已保存：" + path);
-    } else {
-        MessageBoxW(hwnd_, L"保存失败", APP_NAME, MB_ICONERROR);
+        return true;
     }
+    MessageBoxW(hwnd_, L"保存失败", APP_NAME, MB_ICONERROR);
+    return false;
 }
 
-void App::SaveAllDocs() {
+bool App::SaveAllDocs() {
     if (docs_.empty()) {
         ShowStatusMessage(L"没有可保存的页签");
-        return;
+        return true;
     }
     std::wstring dir = util::BrowseFolder(hwnd_, L"选择保存目录");
-    if (dir.empty()) return;
+    if (dir.empty()) {
+        // 用户取消路径选择：调用方据此决定不退出
+        return false;
+    }
 
     int choice = MessageBoxW(hwnd_, L"是否使用 JPG 格式？\n（否 = PNG）", APP_NAME,
                              MB_YESNOCANCEL | MB_ICONQUESTION);
-    if (choice == IDCANCEL) return;
+    if (choice == IDCANCEL) {
+        // 用户取消格式选择：同样视为未完成保存
+        return false;
+    }
     bool jpg = (choice == IDYES);
 
     int n = 0;
@@ -990,6 +1325,7 @@ void App::SaveAllDocs() {
         if (d->SaveAs(path, jpg)) ++n;
     }
     ShowStatusMessage(util::Format(L"已保存 %d 张到 %s", n, dir.c_str()));
+    return true;
 }
 
 void App::SelectTool(Tool t) {
@@ -1035,9 +1371,36 @@ void App::OnSettingsChanged() {
 
 void App::UpdateHotkey() {
     UnregisterHotKey(hwnd_, kHotkeyId);
+    RemoveHotkeyHook();
+
     UINT mods = Settings().hotkeyModifiers | 0x4000; // MOD_NOREPEAT
-    if (!RegisterHotKey(hwnd_, kHotkeyId, mods, Settings().hotkeyVk)) {
-        RegisterHotKey(hwnd_, kHotkeyId, Settings().hotkeyModifiers, Settings().hotkeyVk);
+    if (RegisterHotKey(hwnd_, kHotkeyId, mods, Settings().hotkeyVk)) {
+        ShowStatusMessage(L"快捷键已注册：" + Settings().hotkeyText);
+        return;
+    }
+    if (RegisterHotKey(hwnd_, kHotkeyId, Settings().hotkeyModifiers, Settings().hotkeyVk)) {
+        ShowStatusMessage(L"快捷键已注册：" + Settings().hotkeyText);
+        return;
+    }
+
+    // 系统注册失败 → 多半被其他程序占用
+    std::wstring msg =
+        L"快捷键「" + Settings().hotkeyText + L"」已被其他程序占用。\n\n"
+        L"本工具将强制接管该快捷键（忽略原程序的占用）。\n"
+        L"按下该组合键时仍会截图；原程序一般不会再响应。\n\n"
+        L"若不想冲突，可在「设置」里改成其他快捷键。";
+    if (hwnd_) {
+        MessageBoxW(hwnd_, msg.c_str(), APP_NAME, MB_ICONWARNING | MB_OK);
+    } else {
+        MessageBoxW(nullptr, msg.c_str(), APP_NAME, MB_ICONWARNING | MB_OK);
+    }
+
+    // 强制接管：低级键盘钩子截获该组合键并触发截图
+    InstallHotkeyHook();
+    if (g_kbHook) {
+        ShowStatusMessage(L"快捷键被占用，已强制接管：" + Settings().hotkeyText);
+    } else {
+        ShowStatusMessage(L"快捷键被占用且强制接管失败，请在设置中更换快捷键");
     }
 }
 
@@ -1128,7 +1491,7 @@ int App::HitTab(int x, int y) const {
     int tabTop = h - statusH_ - tabH_;
     if (y < tabTop || y >= tabTop + tabH_) return -1;
     int tx = leftW_ + 8;
-    int tw = util::Scale(72, dpi_);
+    int tw = util::Scale(36, dpi_); // 50% of previous 72px
     for (size_t i = 0; i < docs_.size(); ++i) {
         RECT trc = { tx, tabTop + 4, tx + tw, tabTop + 4 + tabH_ - 8 };
         if (PtInRect(&trc, { x, y })) return static_cast<int>(i);
@@ -1138,6 +1501,12 @@ int App::HitTab(int x, int y) const {
 }
 
 void App::OnLButtonDown(int x, int y) {
+    int cmpId = 0;
+    HitTestCompareControls(x, y, cmpId);
+    if (cmpId != 0) {
+        OnCommand(cmpId);
+        return;
+    }
     int top = HitTopButton(x, y);
     if (top >= 0) {
         OnCommand(topBtns_[top].id);
@@ -1158,7 +1527,8 @@ void App::OnLButtonDown(int x, int y) {
 void App::OnRButtonDown(int x, int y) {
     int tab = HitTab(x, y);
     if (tab >= 0) {
-        ActivateDoc(tab);
+        // Do not switch active tab — compare target is the right-clicked tab
+        contextTabIdx_ = tab;
         CreateTabMenu(tab, x, y);
         return;
     }
@@ -1177,7 +1547,7 @@ void App::OnMouseMove(int x, int y) {
     // 仅在进入/离开左侧图标按钮时更新，避免每帧重绘导致闪烁
     if (left != hoverLeft_) {
         hoverLeft_ = left;
-        KillTimer(hwnd_, 1);
+        KillTimer(hwnd_, kTimerTooltip);
         if (left >= 0) {
             HideTooltip();
             // 延迟约 0.35s 再显示，更稳定
@@ -1196,6 +1566,11 @@ void App::CreateTabMenu(int tabIdx, int x, int y) {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, ID_MENU_SAVE, L"保存");
     AppendMenuW(menu, MF_STRING, ID_MENU_SAVE_ALL, L"全部保存");
+    // 「与当前页签对比」：右键的页签 vs 当前激活页签
+    if (tabIdx != activeIdx_ && activeIdx_ >= 0 &&
+        activeIdx_ < static_cast<int>(docs_.size())) {
+        AppendMenuW(menu, MF_STRING, ID_MENU_COMPARE, L"与当前页签对比");
+    }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_MENU_CLOSE, L"关闭");
     AppendMenuW(menu, MF_STRING, ID_MENU_CLOSE_OTHERS, L"关闭其他");
@@ -1203,4 +1578,71 @@ void App::CreateTabMenu(int tabIdx, int x, int y) {
     ClientToScreen(hwnd_, &pt);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
+}
+
+void App::StartCompare(int targetIdx) {
+    if (targetIdx < 0 || targetIdx >= static_cast<int>(docs_.size())) return;
+    if (activeIdx_ < 0 || activeIdx_ >= static_cast<int>(docs_.size())) return;
+    if (targetIdx == activeIdx_) {
+        ShowStatusMessage(L"不能与当前页签自身对比");
+        return;
+    }
+
+    compareIdx_ = targetIdx;
+    compareMode_ = true;
+    compareSyncScroll_ = true; // default on
+    CompareView::Instance().SetDocument(docs_[compareIdx_].get());
+    LayoutChildren();
+    if (compareSyncScroll_) OnMainCanvasScrolled();
+    UpdateTabBar();
+    ShowStatusMessage(util::Format(L"对比模式：%s ↔ %s（同步滚动默认开）",
+                                   docs_[activeIdx_]->name.c_str(),
+                                   docs_[compareIdx_]->name.c_str()));
+}
+
+void App::ExitCompare() {
+    if (!compareMode_) return;
+    compareMode_ = false;
+    compareIdx_ = -1;
+    compareSyncScroll_ = true;
+    CompareView::Instance().SetDocument(nullptr);
+    CompareView::Instance().ShowPane(false);
+    LayoutChildren();
+    UpdateTabBar();
+    ShowStatusMessage(L"已退出对比");
+}
+
+void App::ToggleCompareSyncScroll() {
+    if (!compareMode_) return;
+    compareSyncScroll_ = !compareSyncScroll_;
+    if (compareSyncScroll_) OnMainCanvasScrolled();
+    ShowStatusMessage(compareSyncScroll_ ? L"同步滚动：开" : L"同步滚动：关（左右独立滚动）");
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void App::OnMainCanvasScrolled() {
+    if (!compareMode_ || !compareSyncScroll_) return;
+    Document* mainDoc = ActiveDoc();
+    Document* cmpDoc = CompareView::Instance().GetDocument();
+    if (!mainDoc || !cmpDoc || mainDoc == cmpDoc) return;
+    static bool syncing = false;
+    if (syncing) return;
+    syncing = true;
+    CompareView::Instance().ApplyScroll(mainDoc->scrollX, mainDoc->scrollY);
+    syncing = false;
+}
+
+void App::OnComparePaneScrolled() {
+    if (!compareMode_ || !compareSyncScroll_) return;
+    Document* mainDoc = ActiveDoc();
+    Document* cmpDoc = CompareView::Instance().GetDocument();
+    if (!mainDoc || !cmpDoc || mainDoc == cmpDoc) return;
+    static bool syncing = false;
+    if (syncing) return;
+    syncing = true;
+    mainDoc->scrollX = cmpDoc->scrollX;
+    mainDoc->scrollY = cmpDoc->scrollY;
+    Canvas::Instance().UpdateScrollBars();
+    Canvas::Instance().Refresh();
+    syncing = false;
 }

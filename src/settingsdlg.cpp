@@ -2,11 +2,12 @@
 #include "settings.h"
 #include "version.h"
 #include "app.h"
+#include "util.h"
 
 namespace {
 
-const int kW = 560;
-const int kH = 480;
+const int kW = 760;
+const int kH = 470;
 
 HICON g_setBlankIcon = nullptr;
 
@@ -35,7 +36,11 @@ enum {
     IDC_THEMECOLOR = 3006,
     IDC_OK = 3007,
     IDC_CANCEL = 3008,
-    IDC_VERSION = 3009
+    IDC_VERSION = 3009,
+    IDC_MINERU_TOKEN = 3010,
+    IDC_MINERU_EYE = 3011,
+    IDC_VOLC_KEY = 3012,
+    IDC_VOLC_EYE = 3013
 };
 
 struct SetDlgState {
@@ -45,6 +50,8 @@ struct SetDlgState {
     COLORREF themeColor = RGB(0, 0x78, 0xD4);
     HWND colorBtn = nullptr;
     AppSettings draft;
+    bool showMineru = false;
+    bool showVolc = false;
 };
 
 const wchar_t* kClass = L"ScreenshotToolSettingsDlg";
@@ -71,6 +78,47 @@ void PaintColorBtn(HWND hwnd, SetDlgState* st) {
     ReleaseDC(st->colorBtn, hdc);
 }
 
+void DrawEyeButton(DRAWITEMSTRUCT* dis, bool shown) {
+    if (!dis) return;
+    Graphics g(dis->hDC);
+    RECT rc = dis->rcItem;
+    int w = rc.right - rc.left;
+    int h = rc.bottom - rc.top;
+    SolidBrush bg(Color(255, 245, 245, 245));
+    g.FillRectangle(&bg, 0, 0, w, h);
+    Pen border(Color(255, 180, 180, 180), 1);
+    g.DrawRectangle(&border, 0, 0, w - 1, h - 1);
+
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    REAL cx = w * 0.5f;
+    REAL cy = h * 0.5f;
+    REAL ew = (std::min)(w, h) * 0.38f;
+    REAL eh = (std::min)(w, h) * 0.22f;
+    Pen eye(Color(255, 60, 60, 60), 1.4f);
+    // almond eye outline
+    GraphicsPath path;
+    path.AddBezier(cx - ew, cy, cx - ew * 0.4f, cy - eh * 1.6f,
+                   cx + ew * 0.4f, cy - eh * 1.6f, cx + ew, cy);
+    path.AddBezier(cx + ew, cy, cx + ew * 0.4f, cy + eh * 1.6f,
+                   cx - ew * 0.4f, cy + eh * 1.6f, cx - ew, cy);
+    g.DrawPath(&eye, &path);
+    if (shown) {
+        SolidBrush pupil(Color(255, 40, 40, 40));
+        g.FillEllipse(&pupil, cx - eh * 0.55f, cy - eh * 0.55f, eh * 1.1f, eh * 1.1f);
+    } else {
+        Pen slash(Color(255, 60, 60, 60), 1.4f);
+        g.DrawLine(&slash, cx - ew * 0.85f, cy + eh * 0.9f, cx + ew * 0.85f, cy - eh * 0.9f);
+        SolidBrush pupil(Color(255, 40, 40, 40));
+        g.FillEllipse(&pupil, cx - eh * 0.45f, cy - eh * 0.45f, eh * 0.9f, eh * 0.9f);
+    }
+}
+
+void TogglePassword(HWND edit, bool show) {
+    if (!edit) return;
+    SendMessageW(edit, EM_SETPASSWORDCHAR, show ? 0 : static_cast<WPARAM>(L'•'), 0);
+    InvalidateRect(edit, nullptr, TRUE);
+}
+
 LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     SetDlgState* st = reinterpret_cast<SetDlgState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     switch (msg) {
@@ -88,12 +136,25 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         static HBRUSH br = CreateSolidBrush(RGB(250, 250, 250));
         return reinterpret_cast<LRESULT>(br);
     }
+    case WM_GETICON:
+        // 标题栏不显示图标
+        return 0;
     case WM_COMMAND: {
         if (!st) return 0;
         int id = LOWORD(wParam);
+        if (id == IDC_MINERU_EYE) {
+            st->showMineru = !st->showMineru;
+            TogglePassword(GetDlgItem(hwnd, IDC_MINERU_TOKEN), st->showMineru);
+            return 0;
+        }
+        if (id == IDC_VOLC_EYE) {
+            st->showVolc = !st->showVolc;
+            TogglePassword(GetDlgItem(hwnd, IDC_VOLC_KEY), st->showVolc);
+            return 0;
+        }
         if (id == IDC_OK) {
-            wchar_t buf[128] = {};
-            GetWindowTextW(GetDlgItem(hwnd, IDC_HOTKEY), buf, 128);
+            wchar_t buf[256] = {};
+            GetWindowTextW(GetDlgItem(hwnd, IDC_HOTKEY), buf, 256);
             UINT m = 0, v = 0;
             if (ParseHotkeyText(buf, m, v) && v != 0) {
                 st->draft.hotkeyModifiers = m;
@@ -112,6 +173,14 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (st->draft.mosaicSize < 1) st->draft.mosaicSize = 1;
             if (st->draft.lineThickness < 1) st->draft.lineThickness = 1;
             if (st->draft.brushThickness < 1) st->draft.brushThickness = 1;
+
+            wchar_t tokenBuf[512] = {};
+            GetWindowTextW(GetDlgItem(hwnd, IDC_MINERU_TOKEN), tokenBuf, 512);
+            st->draft.mineruToken = util::TrimToken(tokenBuf);
+            wchar_t volcBuf[512] = {};
+            GetWindowTextW(GetDlgItem(hwnd, IDC_VOLC_KEY), volcBuf, 512);
+            st->draft.volcApiKey = util::TrimToken(volcBuf);
+
             // 保留原主题色（界面已移除该项）
             st->ok = true;
             st->done = true;
@@ -135,11 +204,20 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     case WM_DRAWITEM: {
         auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
-        if (st && dis && dis->CtlID == IDC_THEMECOLOR) {
+        if (!dis) return 0;
+        if (st && dis->CtlID == IDC_THEMECOLOR) {
             Graphics g(dis->hDC);
             SolidBrush br(ToGpColor(st->themeColor));
             g.FillRectangle(&br, 0, 0, dis->rcItem.right - dis->rcItem.left,
                             dis->rcItem.bottom - dis->rcItem.top);
+            return TRUE;
+        }
+        if (dis->CtlID == IDC_MINERU_EYE) {
+            DrawEyeButton(dis, st && st->showMineru);
+            return TRUE;
+        }
+        if (dis->CtlID == IDC_VOLC_EYE) {
+            DrawEyeButton(dis, st && st->showVolc);
             return TRUE;
         }
         return 0;
@@ -158,15 +236,15 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 void EnsureClass(HINSTANCE hi) {
     static bool done = false;
     if (done) return;
-    if (!g_setBlankIcon) g_setBlankIcon = MakeBlankIconSet(16);
+    // 不设置窗口类图标：标题栏「设置」左侧不要图标
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = DlgProc;
     wc.hInstance = hi;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(static_cast<INT_PTR>(COLOR_WINDOW + 1));
-    wc.hIcon = g_setBlankIcon;
-    wc.hIconSm = g_setBlankIcon;
+    wc.hIcon = nullptr;
+    wc.hIconSm = nullptr;
     wc.lpszClassName = kClass;
     RegisterClassExW(&wc);
     done = true;
@@ -198,13 +276,17 @@ bool SettingsDialog::Show(HWND owner) {
                                 owner, nullptr, hi, &st);
     if (!hwnd) return false;
     SetWindowTextW(hwnd, L"设置");
+    // 去掉标题栏图标（大/小 + 窗口类）
     SendMessageW(hwnd, WM_SETICON, ICON_BIG, 0);
     SendMessageW(hwnd, WM_SETICON, ICON_SMALL, 0);
+    SetClassLongPtrW(hwnd, GCLP_HICON, 0);
+    SetClassLongPtrW(hwnd, GCLP_HICONSM, 0);
 
     HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
 
-    int y = 20;
+    // 紧凑布局：减小行距与底部留白
+    int y = 16;
     auto label = [&](const wchar_t* text, int x, int yy) {
         HWND h = CreateWindowW(L"STATIC", text, WS_CHILD | WS_VISIBLE,
                                x, yy, 110, 24, hwnd, nullptr, hi, nullptr);
@@ -213,60 +295,111 @@ bool SettingsDialog::Show(HWND owner) {
     auto edit = [&](int id, const wchar_t* val, int x, int yy, int w) {
         HWND h = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", val,
                                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                 x, yy, w, 28, hwnd,
+                                 x, yy, w, 26, hwnd,
                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hi, nullptr);
         SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         return h;
     };
 
-    label(L"截图快捷键", 24, y);
-    edit(IDC_HOTKEY, st.draft.hotkeyText.c_str(), 160, y - 4, 320);
-    y += 50;
+    label(L"截图快捷键", 20, y);
+    edit(IDC_HOTKEY, st.draft.hotkeyText.c_str(), 140, y - 3, 300);
+    y += 42;
 
-    label(L"主题", 24, y);
+    label(L"主题", 20, y);
     HWND theme = CreateWindowW(L"COMBOBOX", L"",
                                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-                               160, y - 4, 320, 160, hwnd,
+                               140, y - 3, 300, 160, hwnd,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_THEME)), hi, nullptr);
     SendMessageW(theme, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     SendMessageW(theme, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"跟随系统"));
     SendMessageW(theme, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"明亮"));
     SendMessageW(theme, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"暗色"));
     SendMessageW(theme, CB_SETCURSEL, static_cast<int>(st.draft.theme), 0);
-    y += 50;
+    y += 42;
 
-    label(L"马赛克密度", 24, y);
-    edit(IDC_MOSAIC, std::to_wstring(st.draft.mosaicSize).c_str(), 160, y - 4, 100);
-    y += 50;
+    label(L"马赛克密度", 20, y);
+    edit(IDC_MOSAIC, std::to_wstring(st.draft.mosaicSize).c_str(), 140, y - 3, 100);
+    y += 42;
 
-    label(L"线条粗细", 24, y);
-    edit(IDC_LINE, std::to_wstring(st.draft.lineThickness).c_str(), 160, y - 4, 100);
-    y += 50;
+    label(L"线条粗细", 20, y);
+    edit(IDC_LINE, std::to_wstring(st.draft.lineThickness).c_str(), 140, y - 3, 100);
+    y += 42;
 
-    label(L"笔刷粗细", 24, y);
-    edit(IDC_BRUSH, std::to_wstring(st.draft.brushThickness).c_str(), 160, y - 4, 100);
-    y += 50;
+    label(L"笔刷粗细", 20, y);
+    edit(IDC_BRUSH, std::to_wstring(st.draft.brushThickness).c_str(), 140, y - 3, 100);
+    y += 42;
 
-    // 主题色已移除（当前版本无实际用途）
+    // 密码字号略小，保证长 token 单行可完整显示
+    HFONT fontPw = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                               DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Consolas");
+    if (!fontPw) fontPw = font;
 
-    std::wstring ver;
-    {
-        std::string bt = APP_BUILD_TIME;
-        std::wstring wbt(bt.begin(), bt.end());
-        ver = std::wstring(L"版本 ") + APP_VERSION + L"  ·  打包时间 " + wbt;
-    }
+    // MinerU token：密码框 + 小眼睛 + 右侧说明
+    label(L"MinerU token", 20, y);
+    HWND mineruEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", st.draft.mineruToken.c_str(),
+                                      WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_PASSWORD,
+                                      140, y - 3, 470, 26, hwnd,
+                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MINERU_TOKEN)), hi, nullptr);
+    SendMessageW(mineruEdit, EM_SETPASSWORDCHAR, static_cast<WPARAM>(L'•'), 0);
+    SendMessageW(mineruEdit, WM_SETFONT, reinterpret_cast<WPARAM>(fontPw), TRUE);
+    HWND mineruEye = CreateWindowW(L"BUTTON", L"",
+                                   WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                   614, y - 3, 28, 26, hwnd,
+                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MINERU_EYE)), hi, nullptr);
+    (void)mineruEye;
+    HWND mineruHint = CreateWindowW(L"STATIC", L"提取内容用",
+                                    WS_CHILD | WS_VISIBLE,
+                                    646, y + 2, 90, 22, hwnd, nullptr, hi, nullptr);
+    SendMessageW(mineruHint, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    y += 42;
+
+    // 火山 API Key
+    label(L"火山 API Key", 20, y);
+    HWND volcEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", st.draft.volcApiKey.c_str(),
+                                    WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_PASSWORD,
+                                    140, y - 3, 470, 26, hwnd,
+                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_VOLC_KEY)), hi, nullptr);
+    SendMessageW(volcEdit, EM_SETPASSWORDCHAR, static_cast<WPARAM>(L'•'), 0);
+    SendMessageW(volcEdit, WM_SETFONT, reinterpret_cast<WPARAM>(fontPw), TRUE);
+    HWND volcEye = CreateWindowW(L"BUTTON", L"",
+                                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                 614, y - 3, 28, 26, hwnd,
+                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_VOLC_EYE)), hi, nullptr);
+    (void)volcEye;
+    HWND volcHint = CreateWindowW(L"STATIC", L"魔法消除用",
+                                  WS_CHILD | WS_VISIBLE,
+                                  646, y + 2, 90, 22, hwnd, nullptr, hi, nullptr);
+    SendMessageW(volcHint, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    y += 42;
+
+    // 申请地址提示（版本信息与火山 API Key 之间）
+    const wchar_t* tipText =
+        L"MinerU token申请地址（免费，每3个月一换）：https://mineru.net/apiManage/token\n"
+        L"火山APIkey申请地址（费用超低）：https://console.volcengine.com/imp/ai-mediakit/settings?";
+    HFONT fontTip = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
+    HWND tip = CreateWindowW(L"STATIC", tipText,
+                             WS_CHILD | WS_VISIBLE,
+                             20, y, kW - 40, 48, hwnd, nullptr, hi, nullptr);
+    SendMessageW(tip, WM_SETFONT, reinterpret_cast<WPARAM>(fontTip ? fontTip : font), TRUE);
+    y += 56;
+
+    // 打包时间：yyyy-MM-dd HH:mm:ss
+    std::wstring ver = std::wstring(L"版本 ") + APP_VERSION +
+                       L"  ·  打包时间 " + AppBuildTimeFormatted();
     HWND verH = CreateWindowW(L"STATIC", ver.c_str(), WS_CHILD | WS_VISIBLE,
-                              24, kH - 100, kW - 48, 24, hwnd,
+                              20, y, kW - 40, 22, hwnd,
                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_VERSION)), hi, nullptr);
     SendMessageW(verH, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    y += 30;
 
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                            kW - 240, kH - 64, 100, 36, hwnd,
+                            kW - 220, y, 90, 32, hwnd,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OK)), hi, nullptr);
     HWND cancel = CreateWindowW(L"BUTTON", L"取消",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                kW - 120, kH - 64, 100, 36, hwnd,
+                                kW - 120, y, 90, 32, hwnd,
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CANCEL)), hi, nullptr);
     SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
@@ -285,6 +418,8 @@ bool SettingsDialog::Show(HWND owner) {
         }
     }
     if (font) DeleteObject(font);
+    if (fontPw && fontPw != font) DeleteObject(fontPw);
+    if (fontTip) DeleteObject(fontTip);
 
     if (!st.ok) return false;
 
@@ -296,6 +431,8 @@ bool SettingsDialog::Show(HWND owner) {
     s.mosaicSize = st.draft.mosaicSize;
     s.lineThickness = st.draft.lineThickness;
     s.brushThickness = st.draft.brushThickness;
+    s.mineruToken = util::TrimToken(st.draft.mineruToken);
+    s.volcApiKey = util::TrimToken(st.draft.volcApiKey);
     // themeColor 保持原值（设置界面已不再提供）
     s.Save();
     App::Instance().OnSettingsChanged();

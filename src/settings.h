@@ -27,6 +27,10 @@ struct AppSettings {
     COLORREF drawColor  = RGB(0xFF, 0x00, 0x00);
     BYTE     drawAlpha  = 255;
 
+    // API tokens (persisted; never hardcode secrets in source)
+    std::wstring mineruToken;  // MinerU API — 提取内容
+    std::wstring volcApiKey;   // 火山引擎 AI MediaKit — 魔法消除
+
     void Load();
     void Save() const;
 

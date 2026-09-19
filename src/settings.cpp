@@ -4,8 +4,8 @@
 namespace {
 
 std::wstring IniValue(const wchar_t* section, const wchar_t* key, const wchar_t* def) {
-    wchar_t buf[512] = {};
-    GetPrivateProfileStringW(section, key, def, buf, 512, util::GetIniPath().c_str());
+    wchar_t buf[1024] = {};
+    GetPrivateProfileStringW(section, key, def, buf, 1024, util::GetIniPath().c_str());
     return buf;
 }
 
@@ -168,6 +168,9 @@ void AppSettings::Load() {
     drawColor      = util::ParseHex(IniValue(L"Settings", L"DrawColor", L"#FF0000"));
     int a = IniInt(L"Settings", L"DrawAlpha", 255);
     drawAlpha = static_cast<BYTE>((std::max)(0, (std::min)(255, a)));
+
+    mineruToken = util::TrimToken(IniValue(L"Settings", L"MinerUToken", L""));
+    volcApiKey  = util::TrimToken(IniValue(L"Settings", L"VolcApiKey", L""));
 }
 
 void AppSettings::Save() const {
@@ -181,6 +184,8 @@ void AppSettings::Save() const {
     IniWrite(L"Settings", L"ThemeColor", util::ToHex(themeColor));
     IniWrite(L"Settings", L"DrawColor", util::ToHex(drawColor));
     IniWriteInt(L"Settings", L"DrawAlpha", drawAlpha);
+    IniWrite(L"Settings", L"MinerUToken", util::TrimToken(mineruToken));
+    IniWrite(L"Settings", L"VolcApiKey", util::TrimToken(volcApiKey));
 
     // Meta
     IniWrite(L"Meta", L"Version", APP_VERSION);

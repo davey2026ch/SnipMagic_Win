@@ -98,8 +98,117 @@ static BOOL CALLBACK HideOurWindowsProc(HWND hwnd, LPARAM) {
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid == GetCurrentProcessId() && IsWindowVisible(hwnd)) {
         ShowWindow(hwnd, SW_HIDE);
+        SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
     }
     return TRUE;
+}
+
+typedef HRESULT(WINAPI* DwmSetAttrFn)(HWND, DWORD, LPCVOID, DWORD);
+typedef HRESULT(WINAPI* DwmFlushFn)();
+
+// DWMWA_CLOAK = 13：强制窗口不可见，比 SW_HIDE 更可靠（前台窗口尤其如此）
+static void SetDwmCloak(HWND hwnd, BOOL cloak) {
+    if (!hwnd || !IsWindow(hwnd)) return;
+    HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
+    if (!dwm) dwm = LoadLibraryW(L"dwmapi.dll");
+    if (!dwm) return;
+    auto fn = reinterpret_cast<DwmSetAttrFn>(GetProcAddress(dwm, "DwmSetWindowAttribute"));
+    if (fn) fn(hwnd, 13, &cloak, sizeof(cloak));
+}
+
+static void FlushDwm() {
+    HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
+    if (!dwm) dwm = LoadLibraryW(L"dwmapi.dll");
+    if (!dwm) return;
+    auto flush = reinterpret_cast<DwmFlushFn>(GetProcAddress(dwm, "DwmFlush"));
+    if (flush) flush();
+}
+
+// 隐藏前保存位置；hide 失败时挪到屏幕外，恢复时放回
+static WINDOWPLACEMENT g_savedPlacement = { sizeof(WINDOWPLACEMENT) };
+static bool g_hasSavedPlacement = false;
+static bool g_movedOffScreen = false;
+
+static void HideOneWindow(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) return;
+    ShowWindow(hwnd, SW_HIDE);
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+    SetDwmCloak(hwnd, TRUE);
+}
+
+// 按钮 / 快捷键共用：强制隐藏本进程窗口，避免截到自己
+void CaptureOverlay::ForceHideForCapture(HWND owner) {
+    // 前台窗口直接 SW_HIDE 往往无效：先把前台让出去
+    // （热键时系统可能刚把本窗口激活，这里必须处理）
+    if (owner && IsWindow(owner) && GetForegroundWindow() == owner) {
+        INPUT inp[2] = {};
+        inp[0].type = INPUT_KEYBOARD;
+        inp[0].ki.wVk = VK_MENU;
+        inp[1].type = INPUT_KEYBOARD;
+        inp[1].ki.wVk = VK_MENU;
+        inp[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        SendInput(2, inp, sizeof(INPUT));
+        HWND shell = GetShellWindow();
+        if (shell && shell != owner) {
+            SetForegroundWindow(shell);
+            AllowSetForegroundWindow(static_cast<DWORD>(-1)); // ASFW_ANY
+        }
+    }
+
+    if (owner && IsWindow(owner)) {
+        if (!g_hasSavedPlacement) {
+            g_savedPlacement.length = sizeof(g_savedPlacement);
+            if (GetWindowPlacement(owner, &g_savedPlacement)) {
+                g_hasSavedPlacement = true;
+            }
+        }
+        HideOneWindow(owner);
+        UpdateWindow(owner);
+    }
+
+    EnumWindows(HideOurWindowsProc, 0);
+    HWND tip = FindWindowW(L"ScreenshotToolTooltip", nullptr);
+    if (tip) HideOneWindow(tip);
+
+    // 轮询直到窗口真正不可见；若仍可见则挪到屏幕外（截不到）
+    for (int i = 0; i < 20; ++i) {
+        FlushDwm();
+        Sleep(15);
+        EnumWindows(HideOurWindowsProc, 0);
+        if (owner && IsWindow(owner)) {
+            HideOneWindow(owner);
+            if (IsWindowVisible(owner)) {
+                // 核手段：移出屏幕，保证 BitBlt 截不到
+                SetWindowPos(owner, nullptr, -32000, -32000, 64, 64,
+                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                g_movedOffScreen = true;
+                ShowWindow(owner, SW_HIDE);
+                SetDwmCloak(owner, TRUE);
+            }
+        }
+        if (!owner || !IsWindow(owner) || !IsWindowVisible(owner)) {
+            FlushDwm();
+            Sleep(25);
+            break;
+        }
+    }
+    FlushDwm();
+}
+
+void CaptureOverlay::UncloakAndShow(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) return;
+    SetDwmCloak(hwnd, FALSE);
+    if (g_hasSavedPlacement && g_movedOffScreen) {
+        g_savedPlacement.length = sizeof(g_savedPlacement);
+        g_savedPlacement.showCmd = SW_SHOWNORMAL;
+        SetWindowPlacement(hwnd, &g_savedPlacement);
+        g_movedOffScreen = false;
+    } else {
+        ShowWindow(hwnd, SW_RESTORE);
+    }
+    ShowWindow(hwnd, SW_SHOW);
 }
 
 void CaptureOverlay::Start(HWND owner) {
@@ -117,21 +226,8 @@ void CaptureOverlay::Start(HWND owner) {
         x = 0; y = 0;
     }
 
-    // 无论按钮还是快捷键截图：先隐藏本进程所有可见窗口，避免把自己截进去
-    bool wasVisible = owner && (IsWindowVisible(owner) || IsIconic(owner));
-    if (owner) {
-        ShowWindow(owner, SW_HIDE);
-        ShowWindow(owner, SW_MINIMIZE);
-        ShowWindow(owner, SW_HIDE);
-    }
-    EnumWindows(HideOurWindowsProc, 0);
-    HWND tip = FindWindowW(L"ScreenshotToolTooltip", nullptr);
-    if (tip) ShowWindow(tip, SW_HIDE);
-
-    // 等待窗口真正从屏幕消失
-    Sleep(180);
-    EnumWindows(HideOurWindowsProc, 0);
-    Sleep(40);
+    // 无论按钮还是快捷键：同一套强制隐藏，确认不可见后再截
+    ForceHideForCapture(owner);
 
     // Capture screen without cursor
     HDC hdcScreen = GetDC(nullptr);
@@ -163,9 +259,9 @@ void CaptureOverlay::Start(HWND owner) {
         SetFocus(hwnd_);
         SetCapture(hwnd_);
         while (ShowCursor(TRUE) < 0) {}
-    } else if (owner && wasVisible) {
-        ShowWindow(owner, SW_RESTORE);
-        ShowWindow(owner, SW_SHOW);
+    } else if (owner && IsWindow(owner)) {
+        UncloakAndShow(owner);
+        SetForegroundWindow(owner);
     }
 }
 
@@ -177,8 +273,7 @@ void CaptureOverlay::Cancel() {
     dragging_ = false;
     screen_.reset();
     if (owner_ && IsWindow(owner_)) {
-        ShowWindow(owner_, SW_RESTORE);
-        ShowWindow(owner_, SW_SHOW);
+        UncloakAndShow(owner_);
         SetForegroundWindow(owner_);
     }
 }
@@ -346,8 +441,7 @@ void CaptureOverlay::FinishCapture() {
     screen_.reset();
 
     if (owner && IsWindow(owner)) {
-        ShowWindow(owner, SW_RESTORE);
-        ShowWindow(owner, SW_SHOW);
+        UncloakAndShow(owner);
         SetForegroundWindow(owner);
         if (hasResult_) {
             PostMessageW(owner, WM_APP + 1, 0, 0);

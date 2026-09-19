@@ -46,6 +46,20 @@ Canvas& Canvas::Instance() {
     return c;
 }
 
+void Canvas::SetTool(Tool t) {
+    tool_ = t;
+    dragMode_ = DragMode::None;
+    draft_.reset();
+    // 查看模式：清掉选中控制点、橡皮筋框选等一切编辑态样式
+    if (t == Tool::View && doc_) {
+        doc_->ClearSelection();
+        doc_->ClearRegion();
+        activeHandle_ = HandleId::None;
+        App::Instance().ShowStatusMessage(L"查看模式：仅浏览，不可编辑");
+    }
+    Refresh();
+}
+
 bool Canvas::Create(HWND parent, HINSTANCE hi) {
     RegCanvasClass(hi);
     hwnd_ = CreateWindowExW(
@@ -124,6 +138,7 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         GetScrollInfo(hwnd, SB_HORZ, &si);
         if (doc_) doc_->scrollX = si.nPos;
         Refresh();
+        App::Instance().OnMainCanvasScrolled();
         return 0;
     }
     case WM_VSCROLL: {
@@ -147,6 +162,7 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         GetScrollInfo(hwnd, SB_VERT, &si);
         if (doc_) doc_->scrollY = si.nPos;
         Refresh();
+        App::Instance().OnMainCanvasScrolled();
         return 0;
     }
     case WM_SETCURSOR: {
@@ -161,6 +177,7 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (sel) {
             auto h = HitHandleOnAnn(sel, ix, iy);
             LPCWSTR idc = nullptr;
+            // 与 HandleId 一致：角点斜箭头，上下竖箭头，左右横箭头
             switch (h) {
             case HandleId::NW: case HandleId::SE: idc = IDC_SIZENWSE; break;
             case HandleId::NE: case HandleId::SW: idc = IDC_SIZENESW; break;
@@ -175,21 +192,35 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             RectF b;
             sel->GetBounds(b);
             if (util::PtInRectF(b, ix, iy)) {
-                SetCursor(LoadCursor(nullptr,
-                    sel->type == AnnType::Text ? IDC_CROSS : IDC_SIZEALL));
+                SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
                 return TRUE;
             }
         }
 
         if (doc_) {
             int hit = doc_->HitTest(ix, iy);
-            if (hit >= 0 && doc_->annotations[hit]->type == AnnType::Text) {
-                RectF b;
-                doc_->annotations[hit]->GetBounds(b);
-                if (util::PtInRectF(b, ix, iy) ||
-                    HitHandleOnAnn(doc_->annotations[hit].get(), ix, iy) != HandleId::None) {
-                    SetCursor(LoadCursor(nullptr, IDC_CROSS));
+            if (hit >= 0) {
+                auto* ann = doc_->annotations[hit].get();
+                auto h = HitHandleOnAnn(ann, ix, iy);
+                LPCWSTR idc = nullptr;
+                switch (h) {
+                case HandleId::NW: case HandleId::SE: idc = IDC_SIZENWSE; break;
+                case HandleId::NE: case HandleId::SW: idc = IDC_SIZENESW; break;
+                case HandleId::N:  case HandleId::S:  idc = IDC_SIZENS; break;
+                case HandleId::E:  case HandleId::W:  idc = IDC_SIZEWE; break;
+                default: break;
+                }
+                if (idc) {
+                    SetCursor(LoadCursor(nullptr, idc));
                     return TRUE;
+                }
+                if (ann->type == AnnType::Text) {
+                    RectF b;
+                    ann->GetBounds(b);
+                    if (util::PtInRectF(b, ix, iy)) {
+                        SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
+                        return TRUE;
+                    }
                 }
             }
         }
@@ -203,8 +234,9 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_ERASEBKGND:
         return 1;
     default:
-        return DefWindowProcW(hwnd, msg, wParam, lParam);
+        break;
     }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 void Canvas::EnsureBackbuffer(int w, int h) {
@@ -362,11 +394,12 @@ void Canvas::OnPaint() {
     GraphicsState st = g.Save();
     g.TranslateTransform(static_cast<REAL>(ix), static_cast<REAL>(iy));
     g.ScaleTransform(z, z);
-    if (draft_) draft_->Draw(g);
+    if (draft_ && tool_ != Tool::View) draft_->Draw(g);
     doc_->DrawAnnotations(g, false);
 
-    // rubber-band or stored region
-    if (dragMode_ == DragMode::Rubber || doc_->hasRegion) {
+    // rubber-band or stored region（查看模式不绘制）
+    if (tool_ != Tool::View &&
+        (dragMode_ == DragMode::Rubber || (doc_ && doc_->hasRegion))) {
         float l, t, r, b;
         if (dragMode_ == DragMode::Rubber) {
             l = (std::min)(startIx_, lastIx_);
@@ -472,6 +505,7 @@ void Canvas::OnMouseWheel(int /*x*/, int /*y*/, int delta) {
         GetScrollInfo(hwnd_, SB_VERT, &si);
         if (doc_) doc_->scrollY = si.nPos;
         Refresh();
+        App::Instance().OnMainCanvasScrolled();
     }
 }
 
@@ -512,6 +546,20 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
             return true;
         };
 
+        auto beginMove = [&](int idx) {
+            doc_->ClearSelection();
+            doc_->ClearRegion();
+            doc_->selectedIdx = idx;
+            doc_->annotations[idx]->selected = true;
+            dragMode_ = DragMode::Move;
+            moveOriginX_ = ix;
+            moveOriginY_ = iy;
+            moveBackup_ = doc_->annotations[idx]->Clone();
+            doc_->PushUndo();
+            Refresh();
+            App::Instance().UpdateStatus();
+        };
+
         // 控制点优先：选中对象 & 命中对象，都可直接拖角点
         if (doc_->GetSelected() && beginResize(doc_->GetSelected(), doc_->selectedIdx))
             return;
@@ -520,43 +568,23 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
         if (hit >= 0 && beginResize(doc_->annotations[hit].get(), hit))
             return;
 
+        // 命中已有标注（含文字框）：按住拖动改位置；双击由 OnDoubleClick 打开编辑
+        // 不在 mouse down 直接弹编辑框，否则拖不动、双击也失效
+        if (hit >= 0) {
+            beginMove(hit);
+            return;
+        }
+
         if (tool_ == Tool::Select) {
-            if (hit >= 0) {
-                doc_->ClearSelection();
-                doc_->ClearRegion();
-                doc_->selectedIdx = hit;
-                doc_->annotations[hit]->selected = true;
-                dragMode_ = DragMode::Move;
-                moveOriginX_ = ix;
-                moveOriginY_ = iy;
-                moveBackup_ = doc_->annotations[hit]->Clone();
-                doc_->PushUndo();
-            } else {
-                doc_->ClearSelection();
-                doc_->ClearRegion();
-                dragMode_ = DragMode::Rubber;
-            }
+            doc_->ClearSelection();
+            doc_->ClearRegion();
+            dragMode_ = DragMode::Rubber;
             Refresh();
             App::Instance().UpdateStatus();
             return;
         }
 
-        // 文字工具
-        if (hit >= 0 && doc_->annotations[hit]->type == AnnType::Text) {
-            doc_->ClearSelection();
-            doc_->ClearRegion();
-            doc_->selectedIdx = hit;
-            doc_->annotations[hit]->selected = true;
-            OpenTextEditor(hit);
-            return;
-        }
-        if (hit >= 0) {
-            doc_->ClearSelection();
-            doc_->selectedIdx = hit;
-            doc_->annotations[hit]->selected = true;
-            Refresh();
-            return;
-        }
+        // 文字工具 + 空白处：插入新文字
         TextDialogResult tr = TextDialog::Show(hwnd_, Settings().drawColor);
         if (tr.ok && !tr.text.empty()) {
             doc_->PushUndo();
@@ -579,7 +607,9 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
             int idx = static_cast<int>(doc_->annotations.size());
             doc_->annotations.push_back(std::move(t));
             doc_->selectedIdx = idx;
-            App::Instance().ShowStatusMessage(L"文字已添加：拖角点调宽高；点框内/双击可编辑");
+            // 插入后切到选择工具，方便立刻拖动 / 双击编辑
+            App::Instance().SelectTool(Tool::Select);
+            App::Instance().ShowStatusMessage(L"文字已添加：按住拖动挪位置，双击编辑，拖角点调宽高");
         }
         Refresh();
         return;
@@ -612,8 +642,17 @@ void Canvas::BeginDraw(float ix, float iy) {
     if (tool_ == Tool::Freehand || tool_ == Tool::Brush) {
         auto f = std::make_unique<FreehandAnn>(tool_ == Tool::Brush);
         f->style.color = color_;
-        f->style.alpha = alpha_;
-        f->style.thickness = (tool_ == Tool::Brush) ? Settings().brushThickness : Settings().lineThickness;
+        if (tool_ == Tool::Brush) {
+            // 荧光笔：半透明盖在底图上，不挡原始内容
+            const BYTE kBrushHighlightAlpha = 88;
+            BYTE a = alpha_;
+            if (a == 0 || a > kBrushHighlightAlpha) a = kBrushHighlightAlpha;
+            f->style.alpha = a;
+            f->style.thickness = Settings().brushThickness;
+        } else {
+            f->style.alpha = alpha_;
+            f->style.thickness = Settings().lineThickness;
+        }
         f->points.push_back(PointF(ix, iy));
         draft_ = std::move(f);
     } else if (tool_ == Tool::Arrow || tool_ == Tool::Line) {
@@ -779,7 +818,7 @@ void Canvas::OpenTextEditor(int hitIndex) {
         t->selected = true;
         doc_->selectedIdx = hitIndex;
         Refresh();
-        App::Instance().ShowStatusMessage(L"文字已更新；拖角点可调整宽高");
+        App::Instance().ShowStatusMessage(L"文字已更新：按住拖动挪位置，双击再次编辑");
     } else {
         doc_->ClearSelection();
         t->selected = true;
@@ -795,9 +834,11 @@ void Canvas::OnDoubleClick(int x, int y) {
     if (!doc_ || tool_ == Tool::View) return;
     float ix, iy;
     ClientToImage(x, y, ix, iy);
+    // 双击文字框 → 打开编辑
     int hit = doc_->HitTest(ix, iy);
     if (hit < 0) return;
     if (doc_->annotations[hit]->type == AnnType::Text) {
+        dragMode_ = DragMode::None;
         OpenTextEditor(hit);
     }
 }
@@ -821,15 +862,17 @@ Canvas::HandleId Canvas::HitHandleOnAnn(const Annotation* ann, float ix, float i
     ann->GetBounds(b);
     b.Inflate(3, 3);
     const float tol = 10.0f;
+    // 点序必须与 HandleId 枚举一致：
+    // NW, N, NE, E, SE, S, SW, W
     PointF pts[8] = {
-        {b.X, b.Y},
-        {b.X + b.Width / 2, b.Y},
-        {b.X + b.Width, b.Y},
-        {b.X, b.Y + b.Height / 2},
-        {b.X + b.Width, b.Y + b.Height / 2},
-        {b.X, b.Y + b.Height},
-        {b.X + b.Width / 2, b.Y + b.Height},
-        {b.X + b.Width, b.Y + b.Height}
+        {b.X, b.Y},                          // NW
+        {b.X + b.Width / 2, b.Y},            // N
+        {b.X + b.Width, b.Y},                // NE
+        {b.X + b.Width, b.Y + b.Height / 2}, // E
+        {b.X + b.Width, b.Y + b.Height},     // SE
+        {b.X + b.Width / 2, b.Y + b.Height}, // S
+        {b.X, b.Y + b.Height},               // SW
+        {b.X, b.Y + b.Height / 2}            // W
     };
     for (int i = 0; i < 8; ++i) {
         if (std::fabs(pts[i].X - ix) <= tol && std::fabs(pts[i].Y - iy) <= tol)
@@ -876,50 +919,24 @@ void Canvas::ResizeSelected(HandleId h, float ix, float iy) {
     }
     RectF nb = util::NormalizeRectF(l, t, r, bt);
 
-    // 文字框：按初始长宽比等比缩放，避免一拖就塌成单行/单列
-    if (sel->type == AnnType::Text && b0.Width > 2.0f && b0.Height > 2.0f) {
-        const float ratio = b0.Width / b0.Height;
-        const bool corner =
-            h == HandleId::NW || h == HandleId::NE ||
-            h == HandleId::SE || h == HandleId::SW;
-        const bool horizontal =
-            h == HandleId::W || h == HandleId::E || corner;
-        const bool vertical =
-            h == HandleId::N || h == HandleId::S || corner;
-
-        float newW = nb.Width;
-        float newH = nb.Height;
-        if (corner) {
-            // 以变化较大的一边为准，另一边按比例跟随
-            float byW = newW;
-            float byH = newH * ratio;
-            if (std::fabs(newW - b0.Width) >= std::fabs(newH - b0.Height)) {
-                newH = newW / ratio;
-            } else {
-                newW = byH;
-            }
-        } else if (horizontal && !vertical) {
-            newH = newW / ratio;
-        } else if (vertical && !horizontal) {
-            newW = newH * ratio;
-        }
-        if (newW < 24.0f) { newW = 24.0f; newH = newW / ratio; }
-        if (newH < 16.0f) { newH = 16.0f; newW = newH * ratio; }
-
+    // 文字框：自由缩放（边点只改宽或高，角点同时改宽高），不锁纵横比
+    if (sel->type == AnnType::Text) {
+        if (nb.Width < 24.0f) nb.Width = 24.0f;
+        if (nb.Height < 16.0f) nb.Height = 16.0f;
         // 保持锚点：对边/对角固定
         float nl = nb.X, nt = nb.Y;
         switch (h) {
-        case HandleId::NW: nl = b0.X + b0.Width - newW; nt = b0.Y + b0.Height - newH; break;
-        case HandleId::NE: nl = b0.X; nt = b0.Y + b0.Height - newH; break;
+        case HandleId::NW: nl = b0.X + b0.Width - nb.Width; nt = b0.Y + b0.Height - nb.Height; break;
+        case HandleId::NE: nl = b0.X; nt = b0.Y + b0.Height - nb.Height; break;
         case HandleId::SE: nl = b0.X; nt = b0.Y; break;
-        case HandleId::SW: nl = b0.X + b0.Width - newW; nt = b0.Y; break;
-        case HandleId::N:  nl = b0.X + (b0.Width - newW) * 0.5f; nt = b0.Y + b0.Height - newH; break;
-        case HandleId::S:  nl = b0.X + (b0.Width - newW) * 0.5f; nt = b0.Y; break;
-        case HandleId::W:  nl = b0.X + b0.Width - newW; nt = b0.Y + (b0.Height - newH) * 0.5f; break;
-        case HandleId::E:  nl = b0.X; nt = b0.Y + (b0.Height - newH) * 0.5f; break;
+        case HandleId::SW: nl = b0.X + b0.Width - nb.Width; nt = b0.Y; break;
+        case HandleId::N:  nl = b0.X + (b0.Width - nb.Width) * 0.5f; nt = b0.Y + b0.Height - nb.Height; break;
+        case HandleId::S:  nl = b0.X + (b0.Width - nb.Width) * 0.5f; nt = b0.Y; break;
+        case HandleId::W:  nl = b0.X + b0.Width - nb.Width; nt = b0.Y + (b0.Height - nb.Height) * 0.5f; break;
+        case HandleId::E:  nl = b0.X; nt = b0.Y + (b0.Height - nb.Height) * 0.5f; break;
         default: break;
         }
-        nb = RectF(nl, nt, newW, newH);
+        nb = RectF(nl, nt, nb.Width, nb.Height);
     } else {
         if (nb.Width < 2) nb.Width = 2;
         if (nb.Height < 2) nb.Height = 2;

@@ -11,18 +11,18 @@ void Annotation::DrawSelection(Graphics& g) const {
     pen.SetDashStyle(DashStyleDash);
     g.DrawRectangle(&pen, rc);
 
-    // 8 handles
+    // 8 handles — 与 HitHandleOnAnn / HandleId 同序：NW N NE E SE S SW W
     const float hs = 5.0f;
     SolidBrush br(Color(255, 0, 120, 215));
     PointF pts[8] = {
         {rc.X, rc.Y},
         {rc.X + rc.Width / 2, rc.Y},
         {rc.X + rc.Width, rc.Y},
-        {rc.X, rc.Y + rc.Height / 2},
         {rc.X + rc.Width, rc.Y + rc.Height / 2},
-        {rc.X, rc.Y + rc.Height},
+        {rc.X + rc.Width, rc.Y + rc.Height},
         {rc.X + rc.Width / 2, rc.Y + rc.Height},
-        {rc.X + rc.Width, rc.Y + rc.Height}
+        {rc.X, rc.Y + rc.Height},
+        {rc.X, rc.Y + rc.Height / 2}
     };
     for (auto& p : pts) {
         g.FillRectangle(&br, p.X - hs / 2, p.Y - hs / 2, hs, hs);
@@ -47,16 +47,22 @@ std::unique_ptr<Annotation> FreehandAnn::Clone() const {
 }
 
 void FreehandAnn::Draw(Graphics& g) const {
+    // 笔刷按荧光笔处理：半透明叠在底图上，能看出原始内容
+    BYTE a = style.alpha;
+    if (type == AnnType::Brush) {
+        const BYTE kBrushHighlightAlpha = 88; // ~35% 不透明
+        if (a == 0 || a > kBrushHighlightAlpha) a = kBrushHighlightAlpha;
+    }
     if (points.size() < 2) {
         if (points.size() == 1) {
             float r = style.thickness * 0.5f;
-            SolidBrush br(ToGpColor(style.color, style.alpha));
+            SolidBrush br(ToGpColor(style.color, a));
             g.FillEllipse(&br, points[0].X - r, points[0].Y - r, r * 2, r * 2);
         }
         return;
     }
     float w = (std::max)(1.0f, static_cast<float>(style.thickness));
-    Pen pen(ToGpColor(style.color, style.alpha), w);
+    Pen pen(ToGpColor(style.color, a), w);
     pen.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
     pen.SetLineJoin(LineJoinRound);
     g.DrawLines(&pen, points.data(), static_cast<INT>(points.size()));

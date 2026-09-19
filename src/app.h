@@ -35,9 +35,11 @@ public:
     void OnCaptureFinished();
     void AddDocument(std::unique_ptr<Gdiplus::Bitmap> bmp);
     void ActivateDoc(int idx);
+    // 返回 true 表示已成功保存；用户取消保存对话框或保存失败时返回 false
+    bool SaveDoc(int idx);
     void CloseDoc(int idx);
-    void SaveDoc(int idx);
-    void SaveAllDocs();
+    // 返回 true 表示保存流程已完成；用户取消路径/格式选择时返回 false
+    bool SaveAllDocs();
     void SelectTool(Tool t);
     void OpenColorPicker();
     void OpenSettings();
@@ -48,6 +50,13 @@ public:
 
     int ActiveIndex() const { return activeIdx_; }
     Document* ActiveDoc();
+
+    void StartCompare(int targetIdx);
+    void ExitCompare();
+    bool IsCompareMode() const { return compareMode_; }
+    void OnMainCanvasScrolled();
+    void OnComparePaneScrolled();
+    void ToggleCompareSyncScroll();
 
 private:
     App() = default;
@@ -65,6 +74,12 @@ private:
     void OnMouseMove(int x, int y);
     void OnContextMenu(int x, int y);
     void CreateTabMenu(int tabIdx, int x, int y);
+    void LayoutCompareButtons();
+    void HitTestCompareControls(int x, int y, int& outId) const;
+
+    // 截图启动：先隐藏，定时器到点后再真正开截（按钮/快捷键同一路径）
+    void BeginCaptureHide();
+    void StartCaptureNow();
 
     void BuildToolbars();
     int HitTopButton(int x, int y) const;
@@ -75,9 +90,17 @@ private:
     HWND hwnd_ = nullptr;
     HWND status_ = nullptr;
     int nextDocId_ = 1;
+    bool capturePending_ = false;
 
     std::vector<std::unique_ptr<Document>> docs_;
     int activeIdx_ = -1;
+    int contextTabIdx_ = -1; // right-clicked tab for context menu
+    int compareIdx_ = -1;    // document shown in right compare pane
+    bool compareMode_ = false;
+    bool compareSyncScroll_ = true; // default on
+    RECT syncScrollRc_{};
+    RECT exitCompareRc_{};
+    bool compareBtnsBuilt_ = false;
 
     std::vector<ToolButton> topBtns_;
     std::vector<ToolButton> leftBtns_;
@@ -121,6 +144,10 @@ enum : int {
     ID_CMD_COPY = 108,
     ID_CMD_PASTE = 109,
     ID_CMD_NUMBER = 110,
+    ID_CMD_SYNC_SCROLL = 111,
+    ID_CMD_EXIT_COMPARE = 112,
+    ID_CMD_EXTRACT = 113,
+    ID_CMD_MAGIC_ERASE = 114,
 
     ID_TOOL_SELECT = 200,
     ID_TOOL_BRUSH = 201,
@@ -144,6 +171,11 @@ enum : int {
     ID_MENU_SAVE = 502,
     ID_MENU_SAVE_ALL = 503,
     ID_MENU_CLOSE_OTHERS = 504,
+    ID_MENU_COMPARE = 505,
 
-    WM_APP_CAPTURE_DONE = WM_APP + 1
+    WM_APP_CAPTURE_DONE = WM_APP + 1,
+    WM_APP_BEGIN_CAPTURE = WM_APP + 2,
+
+    kTimerTooltip = 1,
+    kTimerBeginCapture = 2
 };
