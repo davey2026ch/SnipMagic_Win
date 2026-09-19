@@ -509,15 +509,15 @@ void App::DrawToolIcon(Graphics& g, const ToolButton& b, const RECT& rc,
         break;
     }
     case ID_TOOL_BRUSH: {
-        // 格式刷：原竖直造型顺时针约 45°，握柄朝右上、刷毛朝左下
+        // 格式刷：原竖直造型顺时针约 45° 再水平镜像，握柄朝右上、刷毛朝左下
         const REAL deg = 3.14159265f / 4.0f; // 45°
         const REAL cs = std::cos(deg), sn = std::sin(deg);
-        // 局部坐标：柄向上(-y)、毛向下(+y)；顺时针旋转后映射
+        // 局部坐标：柄向上(-y)、毛向下(+y)；顺时针旋转后水平翻转（x 取反）
         auto rot = [&](REAL lx, REAL ly) -> PointF {
             // 顺时针 45°: x' = x*cos + y*sin, y' = -x*sin + y*cos
             REAL xr = lx * cs + ly * sn;
             REAL yr = -lx * sn + ly * cs;
-            return PointF(cx + xr, cy + yr);
+            return PointF(cx - xr, cy + yr);
         };
         // 握柄（局部 y -11 → -3）
         PointF h0 = rot(0.0f, -11.0f);
@@ -944,15 +944,27 @@ void App::OnPaint() {
         }
 
         // top bar buttons: 与底部页签同一套配色（未选 250 底 / 悬停 230 / 按下主题色+白字）
-        Color fill = hover
-            ? ToGpColor(s.IsDarkTheme() ? RGB(70, 70, 70) : RGB(230, 230, 230))
-            : ToGpColor(s.IsDarkTheme() ? RGB(55, 55, 55) : RGB(250, 250, 250));
-        if (active) fill = ToGpColor(s.themeColor);
+        // 「截图 / 长截图」为主操作按钮：常显主题蓝（与 P1 激活时一致），悬停稍深以示反馈
+        bool primary = (b.id == ID_CMD_CAPTURE || b.id == ID_CMD_LONG_CAPTURE);
+        Color fill;
+        if (primary) {
+            COLORREF base = s.themeColor;
+            COLORREF c = hover ? RGB(GetRValue(base) * 85 / 100,
+                                     GetGValue(base) * 85 / 100,
+                                     GetBValue(base) * 85 / 100)
+                               : base;
+            fill = ToGpColor(c);
+        } else {
+            fill = hover
+                ? ToGpColor(s.IsDarkTheme() ? RGB(70, 70, 70) : RGB(230, 230, 230))
+                : ToGpColor(s.IsDarkTheme() ? RGB(55, 55, 55) : RGB(250, 250, 250));
+            if (active) fill = ToGpColor(s.themeColor);
+        }
         SolidBrush br(fill);
         g.FillRectangle(&br, b.rc.left, b.rc.top, bw, bh);
         Pen p(ToGpColor(s.BorderColor()), 1);
         g.DrawRectangle(&p, b.rc.left, b.rc.top, bw - 1, bh - 1);
-        Color tc = active ? Color(255, 255, 255, 255) : ToGpColor(s.TextColor());
+        Color tc = (active || primary) ? Color(255, 255, 255, 255) : ToGpColor(s.TextColor());
         SolidBrush tbr(tc);
         StringFormat fmt;
         fmt.SetAlignment(StringAlignmentCenter);

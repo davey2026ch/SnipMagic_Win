@@ -506,13 +506,15 @@ bool SettingsDialog::Show(HWND owner) {
     st.verLabel = verH;
     y += 30;
 
+    // 确定/取消固定在窗口底部（内容底部与按钮之间留白，视觉更稳）
+    int btnY = kH - 52;
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                            kW - 220, y, 90, 32, hwnd,
+                            kW - 220, btnY, 90, 32, hwnd,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OK)), hi, nullptr);
     HWND cancel = CreateWindowW(L"BUTTON", L"取消",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                kW - 120, y, 90, 32, hwnd,
+                                kW - 120, btnY, 90, 32, hwnd,
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CANCEL)), hi, nullptr);
     SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
