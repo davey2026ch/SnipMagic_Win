@@ -7,7 +7,9 @@
 #include "extract.h"
 #include "longcapture.h"
 #include "version.h"
+#include "updater.h"
 #include <winuser.h>
+#include <thread>
 
 using namespace Gdiplus;
 
@@ -15,6 +17,11 @@ namespace {
 const wchar_t* kMainClass = L"ScreenshotToolMainWindow";
 const int kHotkeyId = 1;
 const int kLongHotkeyId = 2;
+
+// ---- 自动更新检测的后台结果槽（单实例程序，静态槽即可） ----
+updater::UpdateInfo g_updateInfo;
+std::wstring g_updateDest;   // 下载好的新 exe 路径
+std::wstring g_updateErr;    // 下载失败原因
 
 bool IsDark() { return Settings().IsDarkTheme(); }
 
@@ -322,6 +329,17 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         } else if (wParam == kTimerBeginCapture) {
             KillTimer(hwnd, kTimerBeginCapture);
             StartCaptureNow();
+        } else if (wParam == kTimerUpdateCheck) {
+            KillTimer(hwnd, kTimerUpdateCheck);
+            std::thread([hwnd]() {
+                updater::UpdateInfo info;
+                updater::CheckForUpdate(info);
+                if (info.available) {
+                    g_updateInfo = info;
+                    PostMessageW(hwnd, WM_APP_UPDATE_FOUND, 0, 0);
+                }
+                // 无新版本 / 网络异常：静默，不打扰
+            }).detach();
         }
         return 0;
     case WM_MOUSELEAVE:

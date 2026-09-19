@@ -3,11 +3,25 @@
 #include "version.h"
 #include "app.h"
 #include "util.h"
+#include "updater.h"
+#include <thread>
+#include <memory>
 
 namespace {
 
 const int kW = 760;
 const int kH = 520;
+
+// 更新检测的后台结果槽（单实例单对话框）
+updater::UpdateInfo s_updInfo;
+std::wstring s_updDest;
+std::wstring s_updErr;
+
+enum {
+    WM_APP_UPD_CHECKED = WM_APP + 21,  // 检测完成
+    WM_APP_UPD_READY   = WM_APP + 22,  // 下载完成
+    WM_APP_UPD_FAILED  = WM_APP + 23   // 下载失败
+};
 
 HICON g_setBlankIcon = nullptr;
 
@@ -41,7 +55,8 @@ enum {
     IDC_MINERU_EYE = 3011,
     IDC_VOLC_KEY = 3012,
     IDC_VOLC_EYE = 3013,
-    IDC_LONG_HOTKEY = 3014
+    IDC_LONG_HOTKEY = 3014,
+    IDC_CHECK_UPDATE = 3015
 };
 
 struct SetDlgState {
@@ -53,6 +68,9 @@ struct SetDlgState {
     AppSettings draft;
     bool showMineru = false;
     bool showVolc = false;
+    // 检测更新
+    HWND verLabel = nullptr;
+    bool updateBusy = false;
 };
 
 const wchar_t* kClass = L"ScreenshotToolSettingsDlg";
@@ -153,6 +171,20 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             TogglePassword(GetDlgItem(hwnd, IDC_VOLC_KEY), st->showVolc);
             return 0;
         }
+        if (id == IDC_CHECK_UPDATE) {
+            if (st->updateBusy) return 0;
+            st->updateBusy = true;
+            EnableWindow(GetDlgItem(hwnd, IDC_CHECK_UPDATE), FALSE);
+            SetWindowTextW(st->verLabel, L"正在检测更新，请稍候…");
+            auto info = std::make_shared<updater::UpdateInfo>();
+            HWND h = hwnd;
+            std::thread([h, info]() {
+                updater::CheckForUpdate(*info);
+                s_updInfo = *info;
+                PostMessageW(h, WM_APP_UPD_CHECKED, 0, 0);
+            }).detach();
+            return 0;
+        }
         if (id == IDC_OK) {
             wchar_t buf[256] = {};
             GetWindowTextW(GetDlgItem(hwnd, IDC_HOTKEY), buf, 256);
@@ -239,6 +271,58 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             DrawEyeButton(dis, st && st->showVolc);
             return TRUE;
         }
+        return 0;
+    }
+    case WM_APP_UPD_CHECKED: {
+        if (!st) return 0;
+        EnableWindow(GetDlgItem(hwnd, IDC_CHECK_UPDATE), TRUE);
+        st->updateBusy = false;
+        const updater::UpdateInfo& i = s_updInfo;
+        if (i.available) {
+            std::wstring msg = L"发现新版本 v" + i.latestVersion +
+                               L"（当前 v" + APP_VERSION + L"）。\n"
+                               L"将自动下载并重启程序（未保存的设置修改会丢失），是否继续？";
+            if (MessageBoxW(hwnd, msg.c_str(), L"检测更新",
+                            MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                std::wstring tmp = netutil::MakeTempDir(L"st_upd");
+                s_updDest = tmp + L"\\" +
+                    (i.assetName.empty() ? std::wstring(L"截图工具.exe") : i.assetName);
+                SetWindowTextW(st->verLabel, L"正在下载更新，请稍候…");
+                EnableWindow(GetDlgItem(hwnd, IDC_CHECK_UPDATE), FALSE);
+                st->updateBusy = true;
+                auto url = std::make_shared<std::wstring>(i.assetUrl);
+                auto dest = std::make_shared<std::wstring>(s_updDest);
+                HWND h = hwnd;
+                std::thread([h, url, dest]() {
+                    std::wstring err;
+                    bool ok = updater::DownloadUpdate(*url, *dest, err);
+                    s_updErr = err;
+                    PostMessageW(h, ok ? WM_APP_UPD_READY : WM_APP_UPD_FAILED, 0, 0);
+                }).detach();
+            }
+        } else if (!i.fetched) {
+            SetWindowTextW(st->verLabel, (L"检测更新失败：" + i.error).c_str());
+        } else {
+            SetWindowTextW(st->verLabel,
+                           (std::wstring(L"当前已是最新版本（v") + APP_VERSION + L"）").c_str());
+        }
+        return 0;
+    }
+    case WM_APP_UPD_READY: {
+        if (!st || s_updDest.empty()) return 0;
+        if (updater::ApplyUpdateAndRestart(s_updDest)) {
+            ExitProcess(0); // 新版本进程已启动，当前进程立即退出
+        }
+        EnableWindow(GetDlgItem(hwnd, IDC_CHECK_UPDATE), TRUE);
+        st->updateBusy = false;
+        SetWindowTextW(st->verLabel, L"更新失败：文件替换未成功，可稍后重试");
+        return 0;
+    }
+    case WM_APP_UPD_FAILED: {
+        if (!st) return 0;
+        EnableWindow(GetDlgItem(hwnd, IDC_CHECK_UPDATE), TRUE);
+        st->updateBusy = false;
+        SetWindowTextW(st->verLabel, (L"下载更新失败：" + s_updErr).c_str());
         return 0;
     }
     case WM_CLOSE:
@@ -407,13 +491,19 @@ bool SettingsDialog::Show(HWND owner) {
     SendMessageW(tip, WM_SETFONT, reinterpret_cast<WPARAM>(fontTip ? fontTip : font), TRUE);
     y += 56;
 
-    // 打包时间：yyyy-MM-dd HH:mm:ss
+    // 打包时间：yyyy-MM-dd HH:mm:ss（右侧带「检测更新」按钮）
     std::wstring ver = std::wstring(L"版本 ") + APP_VERSION +
                        L"  ·  打包时间 " + AppBuildTimeFormatted();
     HWND verH = CreateWindowW(L"STATIC", ver.c_str(), WS_CHILD | WS_VISIBLE,
-                              20, y, kW - 40, 22, hwnd,
+                              20, y, kW - 160, 22, hwnd,
                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_VERSION)), hi, nullptr);
     SendMessageW(verH, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    HWND chkUpd = CreateWindowW(L"BUTTON", L"检测更新",
+                                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                kW - 130, y - 4, 110, 28, hwnd,
+                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CHECK_UPDATE)), hi, nullptr);
+    SendMessageW(chkUpd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    st.verLabel = verH;
     y += 30;
 
     HWND ok = CreateWindowW(L"BUTTON", L"确定",

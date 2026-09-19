@@ -184,7 +184,11 @@ enum : int {
     WM_APP_BEGIN_CAPTURE = WM_APP + 2,
     WM_APP_LONG_REGION = WM_APP + 3,
     WM_APP_LONG_DONE = WM_APP + 4,
+    WM_APP_UPDATE_FOUND = WM_APP + 5,   // 后台线程检测到新版本
+    WM_APP_UPDATE_READY = WM_APP + 6,   // 新版本包下载完成
+    WM_APP_UPDATE_FAILED = WM_APP + 7,  // 下载失败
 
     kTimerTooltip = 1,
-    kTimerBeginCapture = 2
+    kTimerBeginCapture = 2,
+    kTimerUpdateCheck = 3               // 启动 3 秒后触发一次更新检测
 };

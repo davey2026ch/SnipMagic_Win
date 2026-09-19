@@ -220,6 +220,12 @@ inline bool HttpRequest(const std::wstring& method,
         return false;
     }
     WinHttpSetTimeouts(hSession, 15000, 15000, 30000, 60000);
+    // 附件下载常带 302 跳转，放开重定向限制（默认禁 https→http）
+#ifndef WINHTTP_REDIRECT_POLICY_ALWAYS
+#define WINHTTP_REDIRECT_POLICY_ALWAYS 2
+#endif
+    DWORD redir = WINHTTP_REDIRECT_POLICY_ALWAYS;
+    WinHttpSetOption(hSession, WINHTTP_OPTION_REDIRECT_POLICY, &redir, sizeof(redir));
 
     HINTERNET hConnect = WinHttpConnect(hSession, up.host.c_str(), up.port, 0);
     if (!hConnect) {
