@@ -149,6 +149,54 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         Refresh();
         return 0;
     }
+    case WM_SETCURSOR: {
+        if (LOWORD(lParam) != HTCLIENT) break;
+        POINT pt;
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd, &pt);
+        float ix = 0, iy = 0;
+        if (doc_) ClientToImage(pt.x, pt.y, ix, iy);
+
+        Annotation* sel = doc_ ? doc_->GetSelected() : nullptr;
+        if (sel) {
+            auto h = HitHandleOnAnn(sel, ix, iy);
+            LPCWSTR idc = nullptr;
+            switch (h) {
+            case HandleId::NW: case HandleId::SE: idc = IDC_SIZENWSE; break;
+            case HandleId::NE: case HandleId::SW: idc = IDC_SIZENESW; break;
+            case HandleId::N:  case HandleId::S:  idc = IDC_SIZENS; break;
+            case HandleId::E:  case HandleId::W:  idc = IDC_SIZEWE; break;
+            default: break;
+            }
+            if (idc) {
+                SetCursor(LoadCursor(nullptr, idc));
+                return TRUE;
+            }
+            RectF b;
+            sel->GetBounds(b);
+            if (util::PtInRectF(b, ix, iy)) {
+                SetCursor(LoadCursor(nullptr,
+                    sel->type == AnnType::Text ? IDC_CROSS : IDC_SIZEALL));
+                return TRUE;
+            }
+        }
+
+        if (doc_) {
+            int hit = doc_->HitTest(ix, iy);
+            if (hit >= 0 && doc_->annotations[hit]->type == AnnType::Text) {
+                RectF b;
+                doc_->annotations[hit]->GetBounds(b);
+                if (util::PtInRectF(b, ix, iy) ||
+                    HitHandleOnAnn(doc_->annotations[hit].get(), ix, iy) != HandleId::None) {
+                    SetCursor(LoadCursor(nullptr, IDC_CROSS));
+                    return TRUE;
+                }
+            }
+        }
+
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        return TRUE;
+    }
     case WM_KEYDOWN:
         OnKeyDown(wParam);
         return 0;
@@ -813,8 +861,8 @@ void Canvas::ResizeSelected(HandleId h, float ix, float iy) {
         return;
     }
 
-    RectF b = resizeStartBounds_;
-    float l = b.X, t = b.Y, r = b.X + b.Width, bt = b.Y + b.Height;
+    RectF b0 = resizeStartBounds_;
+    float l = b0.X, t = b0.Y, r = b0.X + b0.Width, bt = b0.Y + b0.Height;
     switch (h) {
     case HandleId::NW: l = ix; t = iy; break;
     case HandleId::N:  t = iy; break;
@@ -827,8 +875,55 @@ void Canvas::ResizeSelected(HandleId h, float ix, float iy) {
     default: break;
     }
     RectF nb = util::NormalizeRectF(l, t, r, bt);
-    if (nb.Width < 2) nb.Width = 2;
-    if (nb.Height < 2) nb.Height = 2;
+
+    // 文字框：按初始长宽比等比缩放，避免一拖就塌成单行/单列
+    if (sel->type == AnnType::Text && b0.Width > 2.0f && b0.Height > 2.0f) {
+        const float ratio = b0.Width / b0.Height;
+        const bool corner =
+            h == HandleId::NW || h == HandleId::NE ||
+            h == HandleId::SE || h == HandleId::SW;
+        const bool horizontal =
+            h == HandleId::W || h == HandleId::E || corner;
+        const bool vertical =
+            h == HandleId::N || h == HandleId::S || corner;
+
+        float newW = nb.Width;
+        float newH = nb.Height;
+        if (corner) {
+            // 以变化较大的一边为准，另一边按比例跟随
+            float byW = newW;
+            float byH = newH * ratio;
+            if (std::fabs(newW - b0.Width) >= std::fabs(newH - b0.Height)) {
+                newH = newW / ratio;
+            } else {
+                newW = byH;
+            }
+        } else if (horizontal && !vertical) {
+            newH = newW / ratio;
+        } else if (vertical && !horizontal) {
+            newW = newH * ratio;
+        }
+        if (newW < 24.0f) { newW = 24.0f; newH = newW / ratio; }
+        if (newH < 16.0f) { newH = 16.0f; newW = newH * ratio; }
+
+        // 保持锚点：对边/对角固定
+        float nl = nb.X, nt = nb.Y;
+        switch (h) {
+        case HandleId::NW: nl = b0.X + b0.Width - newW; nt = b0.Y + b0.Height - newH; break;
+        case HandleId::NE: nl = b0.X; nt = b0.Y + b0.Height - newH; break;
+        case HandleId::SE: nl = b0.X; nt = b0.Y; break;
+        case HandleId::SW: nl = b0.X + b0.Width - newW; nt = b0.Y; break;
+        case HandleId::N:  nl = b0.X + (b0.Width - newW) * 0.5f; nt = b0.Y + b0.Height - newH; break;
+        case HandleId::S:  nl = b0.X + (b0.Width - newW) * 0.5f; nt = b0.Y; break;
+        case HandleId::W:  nl = b0.X + b0.Width - newW; nt = b0.Y + (b0.Height - newH) * 0.5f; break;
+        case HandleId::E:  nl = b0.X; nt = b0.Y + (b0.Height - newH) * 0.5f; break;
+        default: break;
+        }
+        nb = RectF(nl, nt, newW, newH);
+    } else {
+        if (nb.Width < 2) nb.Width = 2;
+        if (nb.Height < 2) nb.Height = 2;
+    }
     sel->SetBounds(nb);
 }
 

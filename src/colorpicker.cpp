@@ -119,8 +119,9 @@ void DrawWheel(HDC hdc, RECT rc, PickState& st) {
     int R = (std::min)(rc.right - rc.left, rc.bottom - rc.top) / 2;
     if (R < 4) return;
 
-    // Rebuild cache only when lightness changes
-    if (!st.wheelCache || std::fabs(st.wheelCacheL - st.l) > 0.002f) {
+    // 色轮固定用中等明度绘制，避免当前色为白/黑时整盘发白或发黑
+    const float wheelL = 0.5f;
+    if (!st.wheelCache || std::fabs(st.wheelCacheL - wheelL) > 0.002f) {
         st.wheelCache = std::make_unique<Bitmap>(R * 2, R * 2, PixelFormat32bppARGB);
         BitmapData data;
         Rect lockRc(0, 0, R * 2, R * 2);
@@ -139,7 +140,7 @@ void DrawWheel(HDC hdc, RECT rc, PickState& st) {
                     float dist = std::sqrt(static_cast<float>(d2)) / R;
                     float ang = std::atan2(static_cast<float>(dy), static_cast<float>(dx)) * 180.0f / 3.14159265f;
                     if (ang < 0) ang += 360;
-                    COLORREF c = util::HSLtoRGB(ang, dist, st.l);
+                    COLORREF c = util::HSLtoRGB(ang, dist, wheelL);
                     p[0] = GetBValue(c);
                     p[1] = GetGValue(c);
                     p[2] = GetRValue(c);
@@ -148,7 +149,7 @@ void DrawWheel(HDC hdc, RECT rc, PickState& st) {
             }
             st.wheelCache->UnlockBits(&data);
         }
-        st.wheelCacheL = st.l;
+        st.wheelCacheL = wheelL;
     }
 
     g.DrawImage(st.wheelCache.get(), cx - R, cy - R);
@@ -472,6 +473,11 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_COMMAND: {
         if (!st) return 0;
         int id = LOWORD(wParam);
+        int code = HIWORD(wParam);
+        // 按钮只响应 BN_CLICKED，避免重复触发
+        if (id == IDC_OK || id == IDC_CANCEL || id == IDC_EYEDROP || id == IDC_WHITE) {
+            if (code != BN_CLICKED && code != 0) return 0;
+        }
         if (id == IDC_OK) {
             wchar_t buf[64] = {};
             GetWindowTextW(GetDlgItem(hwnd, IDC_HEX), buf, 64);
@@ -614,6 +620,15 @@ bool ColorPicker::Eyedropper(HWND owner, COLORREF& outColor) {
 }
 
 ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, bool showQuickWhite) {
+    // 防止重复弹出（按钮双击/消息重入导致叠两层窗口）
+    static bool s_inShow = false;
+    if (s_inShow) return ColorResult{};
+    s_inShow = true;
+    struct Guard {
+        bool* p;
+        ~Guard() { *p = false; }
+    } guard{ &s_inShow };
+
     HINSTANCE hi = GetModuleHandleW(nullptr);
     EnsurePickClasses(hi);
 

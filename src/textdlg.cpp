@@ -112,21 +112,26 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             UpdateBgColorVisibility(st);
             return 0;
         }
-        if (id == TXC_COLOR) {
-            auto r = ColorPicker::Show(hwnd, st->color, st->alpha, true);
-            if (r.ok) {
-                st->color = r.color;
-                st->alpha = r.alpha;
-                RefreshSwatches(st);
-            }
-            return 0;
-        }
-        if (id == TXC_BGCOLOR) {
-            // 与文字颜色同一弹窗逻辑（色轮 + 白色快捷键）
-            auto r = ColorPicker::Show(hwnd, st->bgColor, 255, true);
-            if (r.ok) {
-                st->bgColor = r.color;
-                RefreshSwatches(st);
+        if (id == TXC_COLOR || id == TXC_BGCOLOR) {
+            if (code != BN_CLICKED && code != 0) return 0;
+            static bool s_inColor = false;
+            if (s_inColor) return 0;
+            s_inColor = true;
+            if (id == TXC_COLOR) {
+                auto r = ColorPicker::Show(hwnd, st->color, st->alpha, true);
+                s_inColor = false;
+                if (r.ok) {
+                    st->color = r.color;
+                    st->alpha = r.alpha;
+                    RefreshSwatches(st);
+                }
+            } else {
+                auto r = ColorPicker::Show(hwnd, st->bgColor, 255, true);
+                s_inColor = false;
+                if (r.ok) {
+                    st->bgColor = r.color;
+                    RefreshSwatches(st);
+                }
             }
             return 0;
         }
