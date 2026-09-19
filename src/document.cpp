@@ -121,27 +121,34 @@ bool Document::ApplyMosaic(int mosaicSize) {
     }
     if (w <= 0 || h <= 0) return false;
 
+    // clamp region into base bounds
+    int bw = static_cast<int>(base->GetWidth());
+    int bh = static_cast<int>(base->GetHeight());
+    int cx = (std::max)(0, x);
+    int cy = (std::max)(0, y);
+    int cw = (std::min)(bw - cx, w);
+    int ch = (std::min)(bh - cy, h);
+    if (cw <= 0 || ch <= 0) return false;
+
     PushUndo();
-    auto composite = RenderComposite();
-    if (!composite) return false;
-    auto patch = util::PixelateBitmap(composite.get(), x, y, w, h, mosaicSize);
+    // 对底图该区域做像素化，然后直接烙回 base：不生成可选中/可拖动的标注图层
+    auto patch = util::PixelateBitmap(base.get(), cx, cy, cw, ch, mosaicSize);
     if (!patch) return false;
-
-    auto img = std::make_unique<ImageAnn>();
-    img->image = std::move(patch);
-    img->rect = RectF(static_cast<REAL>(x), static_cast<REAL>(y),
-                      static_cast<REAL>(img->image->GetWidth()),
-                      static_cast<REAL>(img->image->GetHeight()));
-    img->style.color = RGB(0, 0, 0);
-
-    if (fromRegion) {
-        ClearSelection();
-        img->selected = true;
-        selectedIdx = static_cast<int>(annotations.size());
-        annotations.push_back(std::move(img));
-    } else {
-        annotations[selectedIdx] = std::move(img);
+    {
+        Gdiplus::Graphics g(base.get());
+        g.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+        g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+        g.DrawImage(patch.get(), Gdiplus::Rect(cx, cy, cw, ch),
+                    0, 0, cw, ch, Gdiplus::UnitPixel);
     }
+    patch.reset();
+
+    if (!fromRegion && selectedIdx >= 0) {
+        // 选中图层整体打码：图层被烙进底图后移除原标注
+        annotations.erase(annotations.begin() + selectedIdx);
+        selectedIdx = -1;
+    }
+    ClearSelection();
     ClearRegion();
     return true;
 }
