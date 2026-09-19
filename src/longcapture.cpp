@@ -28,13 +28,13 @@ constexpr int kStatusW = 340;
 constexpr int kStatusH = 26;
 constexpr int kTipX = 18;
 constexpr int kTipY = 32;
-constexpr int kTipW = 604;
+constexpr int kTipW = 350;  // 到「完成」按钮左缘为止，避免控件重叠互相覆盖
 constexpr int kTipH = 26;
-constexpr int kBtnDoneX = 370;
-constexpr int kBtnCancelX = 490;
-constexpr int kBtnW = 120;
-constexpr int kBtnY = 3;
-constexpr int kBtnH = 28;
+constexpr int kBtnDoneX = 376;
+constexpr int kBtnCancelX = 496;
+constexpr int kBtnW = 110;
+constexpr int kBtnY = 14;   // (kBarH - kBtnH) / 2，垂直居中
+constexpr int kBtnH = 36;   // 与两行文字块(4..58)的高度比例协调
 
 void EnsureLcClass(HINSTANCE hi) {
     if (g_lcClassReg) return;
@@ -200,14 +200,14 @@ HWND LongCapture::CreateBar(HINSTANCE hi) {
                                 DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0,
                                 L"Microsoft YaHei");
     statusH_ = CreateWindowW(L"STATIC", statusText_.c_str(),
-                             WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE | SS_ENDELLIPSIS,
+                             WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_LEFT | SS_CENTERIMAGE | SS_ENDELLIPSIS,
                              kStatusX, kStatusY, kStatusW, kStatusH,
                              bar, nullptr, hi, nullptr);
     if (statusH_) {
         SendMessageW(statusH_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
     tipH_ = CreateWindowW(L"STATIC", tipText_.c_str(),
-                          WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE | SS_ENDELLIPSIS,
+                          WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_LEFT | SS_CENTERIMAGE | SS_ENDELLIPSIS,
                           kTipX, kTipY, kTipW, kTipH,
                           bar, nullptr, hi, nullptr);
     if (tipH_) {
@@ -215,11 +215,11 @@ HWND LongCapture::CreateBar(HINSTANCE hi) {
     }
 
     btnDone_ = CreateWindowW(L"BUTTON", L"完成",
-                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                             WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON,
                              kBtnDoneX, kBtnY, kBtnW, kBtnH, bar,
                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdDone)), hi, nullptr);
     btnCancel_ = CreateWindowW(L"BUTTON", L"取消",
-                               WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                               WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_PUSHBUTTON,
                                kBtnCancelX, kBtnY, kBtnW, kBtnH, bar,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdCancel)), hi, nullptr);
     HFONT btnFont = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,

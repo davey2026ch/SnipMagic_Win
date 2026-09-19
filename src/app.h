@@ -73,6 +73,7 @@ private:
     void OnKeyDown(WPARAM vk);
     void OnHotkey(WPARAM id);
     void OnLButtonDown(int x, int y);
+    void OnLButtonUp(int x, int y);
     void OnRButtonDown(int x, int y);
     void OnMouseMove(int x, int y);
     void OnContextMenu(int x, int y);
@@ -111,6 +112,7 @@ private:
     int numberIndex_ = 0; // 0-based; display 1..20
     int hoverLeft_ = -1;
     int hoverTop_ = -1;
+    int pressedTop_ = -1; // 顶部按钮按下态（与页签选中同款主题色反馈）
     HWND tipHwnd_ = nullptr;
     std::wstring tipText_;
     bool tipVisible_ = false;

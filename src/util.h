@@ -256,6 +256,29 @@ inline std::unique_ptr<Gdiplus::Bitmap> CropBitmap(Gdiplus::Bitmap* src, int x, 
     return out;
 }
 
+// Add a 1px border along the image edge (inside, size unchanged).
+// Used for screenshots copied to external apps so they stay visible on white pages.
+inline std::unique_ptr<Gdiplus::Bitmap> AddInnerBorder(Gdiplus::Bitmap* src,
+                                                       Gdiplus::Color color) {
+    if (!src) return nullptr;
+    int w = static_cast<int>(src->GetWidth());
+    int h = static_cast<int>(src->GetHeight());
+    if (w <= 2 || h <= 2) return nullptr;
+    auto out = std::make_unique<Gdiplus::Bitmap>(w, h, PixelFormat32bppARGB);
+    Gdiplus::Graphics g(out.get());
+    g.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeNone);
+    g.DrawImage(src, Gdiplus::Rect(0, 0, w, h), 0, 0, w, h, Gdiplus::UnitPixel);
+    // Four explicit 1px edge fills — deterministic, unlike a 1px pen stroke
+    // which can fall outside the bitmap due to pixel alignment.
+    Gdiplus::SolidBrush b(color);
+    g.FillRectangle(&b, 0, 0, w, 1);          // top
+    g.FillRectangle(&b, 0, h - 1, w, 1);      // bottom
+    g.FillRectangle(&b, 0, 0, 1, h);          // left
+    g.FillRectangle(&b, w - 1, 0, 1, h);      // right
+    return out;
+}
+
 // Put GDI+ bitmap onto Windows clipboard as CF_DIB
 inline bool BitmapToClipboard(Gdiplus::Bitmap* bmp) {
     if (!bmp) return false;
@@ -393,8 +416,18 @@ inline std::unique_ptr<Gdiplus::Bitmap> BitmapFromClipboard() {
     return out;
 }
 
+// 用户「下载」文件夹（导出/保存对话框的默认起始位置）
+inline std::wstring DownloadsDir() {
+    PWSTR p = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &p))) return L"";
+    std::wstring dir = p;
+    CoTaskMemFree(p);
+    return dir;
+}
+
 inline std::wstring OpenSaveDialog(HWND owner, bool save, const wchar_t* filter, const wchar_t* defExt,
-                                   const wchar_t* defName, const wchar_t* title) {
+                                   const wchar_t* defName, const wchar_t* title,
+                                   const wchar_t* initialDir = nullptr) {
     wchar_t file[MAX_PATH] = {};
     if (defName) wcsncpy_s(file, defName, _TRUNCATE);
     OPENFILENAMEW ofn = {};
@@ -405,6 +438,7 @@ inline std::wstring OpenSaveDialog(HWND owner, bool save, const wchar_t* filter,
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrDefExt = defExt;
     ofn.lpstrTitle = title;
+    ofn.lpstrInitialDir = initialDir;
     ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
     if (save) {
         if (!GetSaveFileNameW(&ofn)) return L"";
@@ -414,7 +448,39 @@ inline std::wstring OpenSaveDialog(HWND owner, bool save, const wchar_t* filter,
     return file;
 }
 
-inline std::wstring BrowseFolder(HWND owner, const wchar_t* title) {
+inline std::wstring BrowseFolder(HWND owner, const wchar_t* title,
+                                 const wchar_t* initialDir = nullptr) {
+    // 优先用现代文件夹对话框（支持默认起始目录）
+    IFileDialog* fd = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&fd)))) {
+        std::wstring out;
+        DWORD opts = 0;
+        fd->GetOptions(&opts);
+        fd->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        if (title) fd->SetTitle(title);
+        if (initialDir && *initialDir) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(SHCreateItemFromParsingName(initialDir, nullptr, IID_PPV_ARGS(&item)))) {
+                fd->SetFolder(item);
+                item->Release();
+            }
+        }
+        if (SUCCEEDED(fd->Show(owner))) {
+            IShellItem* res = nullptr;
+            if (SUCCEEDED(fd->GetResult(&res))) {
+                PWSTR p = nullptr;
+                if (SUCCEEDED(res->GetDisplayName(SIGDN_FILESYSPATH, &p))) {
+                    out = p;
+                    CoTaskMemFree(p);
+                }
+                res->Release();
+            }
+        }
+        fd->Release();
+        return out;
+    }
+    // 兜底：旧式对话框
     wchar_t path[MAX_PATH] = {};
     BROWSEINFOW bi = {};
     bi.hwndOwner = owner;

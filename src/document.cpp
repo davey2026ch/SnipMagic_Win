@@ -184,7 +184,10 @@ bool Document::CopySelectionToClipboard(Bitmap** outInternal) {
     auto crop = util::CropBitmap(composite.get(), x, y, w, h);
     if (!crop) return false;
 
-    util::BitmapToClipboard(crop.get());
+    // 外部剪贴板：默认加 1px 内边框，避免浅色背景上截图边缘看不出来；
+    // 应用内粘贴缓冲保持原图（不带边框）。
+    auto bordered = util::AddInnerBorder(crop.get(), Gdiplus::Color(255, 160, 160, 160));
+    util::BitmapToClipboard(bordered ? bordered.get() : crop.get());
     GlobalPasteBuffer().Set(std::unique_ptr<Bitmap>(
         crop->Clone(0, 0, crop->GetWidth(), crop->GetHeight(), PixelFormat32bppARGB)));
     return true;

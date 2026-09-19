@@ -36,6 +36,7 @@ add_executable(ScreenshotTool WIN32
     src/longcapture.cpp
     src/app.h
     src/app.cpp
+    src/app.rc
 )
 
 if(MSVC)

@@ -298,6 +298,9 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_LBUTTONDOWN:
         OnLButtonDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
+    case WM_LBUTTONUP:
+        OnLButtonUp(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        return 0;
     case WM_RBUTTONDOWN:
         OnRButtonDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
@@ -532,12 +535,12 @@ void App::DrawToolIcon(Graphics& g, const ToolButton& b, const RECT& rc,
     }
     case ID_TOOL_TEXT: {
         FontFamily family(L"Segoe UI");
-        Font font(&family, 16.0f, FontStyleBold, UnitPixel);
+        Font font(&family, 19.0f, FontStyleBold, UnitPixel);
         SolidBrush tb(ink);
         StringFormat fmt;
         fmt.SetAlignment(StringAlignmentCenter);
         fmt.SetLineAlignment(StringAlignmentCenter);
-        g.DrawString(L"T", 1, &font, RectF(cx - 12.0f, cy - 12.0f, 24.0f, 24.0f), &fmt, &tb);
+        g.DrawString(L"T", 1, &font, RectF(cx - 14.0f, cy - 14.0f, 28.0f, 28.0f), &fmt, &tb);
         break;
     }
     case ID_TOOL_ARROW: {
@@ -922,10 +925,10 @@ void App::OnPaint() {
             return;
         }
 
-        // top bar buttons: keep text
+        // top bar buttons: 与底部页签同一套配色（未选 250 底 / 悬停 230 / 按下主题色+白字）
         Color fill = hover
-            ? ToGpColor(s.IsDarkTheme() ? RGB(70, 70, 70) : RGB(230, 230, 235))
-            : ToGpColor(s.IsDarkTheme() ? RGB(50, 50, 50) : RGB(245, 245, 245));
+            ? ToGpColor(s.IsDarkTheme() ? RGB(70, 70, 70) : RGB(230, 230, 230))
+            : ToGpColor(s.IsDarkTheme() ? RGB(55, 55, 55) : RGB(250, 250, 250));
         if (active) fill = ToGpColor(s.themeColor);
         SolidBrush br(fill);
         g.FillRectangle(&br, b.rc.left, b.rc.top, bw, bh);
@@ -943,7 +946,8 @@ void App::OnPaint() {
 
     Tool cur = Canvas::Instance().GetTool();
     for (size_t i = 0; i < topBtns_.size(); ++i)
-        drawBtn(topBtns_[i], false, static_cast<int>(i) == hoverTop_, false);
+        drawBtn(topBtns_[i], static_cast<int>(i) == pressedTop_,
+                static_cast<int>(i) == hoverTop_, false);
     for (size_t i = 0; i < leftBtns_.size(); ++i) {
         bool active = leftBtns_[i].toggle && leftBtns_[i].tool == cur;
         drawBtn(leftBtns_[i], active, static_cast<int>(i) == hoverLeft_, true);
@@ -1371,7 +1375,7 @@ bool App::SaveDoc(int idx) {
     std::wstring path = util::OpenSaveDialog(
         hwnd_, true,
         L"PNG 图片\0*.png\0JPG 图片\0*.jpg\0所有文件\0*.*\0",
-        L"png", def.c_str(), L"保存截图");
+        L"png", def.c_str(), L"保存截图", util::DownloadsDir().c_str());
     if (path.empty()) return false;
     bool jpg = path.size() > 4 && _wcsicmp(path.c_str() + path.size() - 4, L".jpg") == 0;
     if (d->SaveAs(path, jpg)) {
@@ -1387,7 +1391,7 @@ bool App::SaveAllDocs() {
         ShowStatusMessage(L"没有可保存的页签");
         return true;
     }
-    std::wstring dir = util::BrowseFolder(hwnd_, L"选择保存目录");
+    std::wstring dir = util::BrowseFolder(hwnd_, L"选择保存目录", util::DownloadsDir().c_str());
     if (dir.empty()) {
         // 用户取消路径选择：调用方据此决定不退出
         return false;
@@ -1613,7 +1617,10 @@ void App::OnLButtonDown(int x, int y) {
     }
     int top = HitTopButton(x, y);
     if (top >= 0) {
-        OnCommand(topBtns_[top].id);
+        // 与页签一致：按下先点亮（主题色），松开在同一按钮上才执行
+        pressedTop_ = top;
+        SetCapture(hwnd_); // 按住拖出窗口也能收到 WM_LBUTTONUP
+        InvalidateRect(hwnd_, nullptr, FALSE);
         return;
     }
     int left = HitLeftButton(x, y);
@@ -1626,6 +1633,16 @@ void App::OnLButtonDown(int x, int y) {
         ActivateDoc(tab);
         return;
     }
+}
+
+void App::OnLButtonUp(int x, int y) {
+    if (pressedTop_ < 0) return;
+    int top = HitTopButton(x, y);
+    bool fire = (top == pressedTop_);
+    pressedTop_ = -1;
+    ReleaseCapture();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    if (fire) OnCommand(topBtns_[top].id);
 }
 
 void App::OnRButtonDown(int x, int y) {
@@ -1661,7 +1678,11 @@ void App::OnMouseMove(int x, int y) {
         }
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
-    hoverTop_ = top; // 不触发提示
+    if (top != hoverTop_) {
+        hoverTop_ = top;
+        InvalidateRect(hwnd_, nullptr, FALSE); // 悬停/按下态变化需要重绘
+    }
+    if (pressedTop_ >= 0) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 // WM_TIMER handled in Handle()

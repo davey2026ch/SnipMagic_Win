@@ -74,7 +74,7 @@ struct ProgressState {
     bool done = false;
     bool cancelledByUser = false;
     netutil::CancelFlag cancel;
-    std::wstring status = L"准备中…";
+    std::wstring status = L"准备中";
     std::wstring cancelText = L"取消识别";
     std::function<void()> work;
     HFONT font = nullptr;
@@ -96,7 +96,9 @@ LRESULT CALLBACK ProgressProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         st = static_cast<ProgressState*>(cs->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
         st->hwnd = hwnd;
-        return TRUE;
+        // 必须交给 DefWindowProc：标题文字正是在这一步被存入窗口的，
+        // 直接 return TRUE 会导致标题栏永远空白
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
     case WM_CTLCOLORSTATIC: {
         HDC hdc = reinterpret_cast<HDC>(wParam);
@@ -312,7 +314,7 @@ bool MineruExtractOnBitmap(Bitmap* bmp, const std::wstring& tokenIn,
         return false;
     }
 
-    prog.status = L"正在申请上传地址…";
+    prog.status = L"正在申请上传地址";
     if (prog.hwnd && IsWindow(prog.hwnd)) {
         SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), prog.status.c_str());
     }
@@ -364,7 +366,7 @@ bool MineruExtractOnBitmap(Bitmap* bmp, const std::wstring& tokenIn,
         return false;
     }
 
-    prog.status = L"正在上传图片…";
+    prog.status = L"正在上传图片";
     if (prog.hwnd && IsWindow(prog.hwnd))
         SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), prog.status.c_str());
 
@@ -384,7 +386,7 @@ bool MineruExtractOnBitmap(Bitmap* bmp, const std::wstring& tokenIn,
         return false;
     }
 
-    prog.status = L"正在识别内容…";
+    prog.status = L"正在识别内容";
     if (prog.hwnd && IsWindow(prog.hwnd))
         SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), prog.status.c_str());
 
@@ -463,7 +465,7 @@ bool MineruExtractOnBitmap(Bitmap* bmp, const std::wstring& tokenIn,
         return false;
     }
 
-    prog.status = L"正在下载结果…";
+    prog.status = L"正在下载结果";
     if (prog.hwnd && IsWindow(prog.hwnd))
         SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), prog.status.c_str());
 
@@ -687,30 +689,39 @@ void ExportMarkdown(HWND owner, const ExtractResult& r) {
     if (!r.hasImages()) {
         std::wstring path = util::OpenSaveDialog(owner, true,
             L"Markdown (*.md)\0*.md\0所有文件\0*.*\0\0",
-            L"md", L"提取内容.md", L"导出 Markdown");
+            L"md", L"提取内容.md", L"导出 Markdown", util::DownloadsDir().c_str());
         if (path.empty()) return;
         netutil::WriteFileBytes(path, r.markdownUtf8.data(), r.markdownUtf8.size());
         MessageBoxW(owner, (L"导出成功！\n" + path).c_str(), L"提示", MB_ICONINFORMATION);
         return;
     }
-    // 有图：导出为文件夹（markdown + images）；MD 文件保留原始引用，便于相对路径打开
-    std::wstring dir = util::BrowseFolder(owner, L"选择导出文件夹");
+    // 有图：在所选位置新建「提取内容」文件夹（重名自动加 (2)(3)...），
+    // 内含「提取内容.md」+ images 子目录；MD 保留原始相对引用，可直接打开
+    std::wstring dir = util::BrowseFolder(owner, L"选择导出位置", util::DownloadsDir().c_str());
     if (dir.empty()) return;
-    CreateDirectoryW((dir + L"\\images").c_str(), nullptr);
-    std::wstring mdPath = dir + L"\\content.md";
+    std::wstring base = dir + L"\\提取内容";
+    std::wstring sub = base;
+    for (int n = 2; GetFileAttributesW(sub.c_str()) != INVALID_FILE_ATTRIBUTES; ++n)
+        sub = base + L" (" + std::to_wstring(n) + L")";
+    if (!CreateDirectoryW(sub.c_str(), nullptr)) {
+        MessageBoxW(owner, L"创建导出文件夹失败", L"错误", MB_ICONERROR);
+        return;
+    }
+    CreateDirectoryW((sub + L"\\images").c_str(), nullptr);
+    std::wstring mdPath = sub + L"\\提取内容.md";
     netutil::WriteFileBytes(mdPath, r.markdownUtf8.data(), r.markdownUtf8.size());
     for (const auto& im : r.images) {
-        std::wstring dst = dir + L"\\images\\" + im.fileName;
+        std::wstring dst = sub + L"\\images\\" + im.fileName;
         netutil::WriteFileBytes(dst, im.pngOrRaw.data(), im.pngOrRaw.size());
     }
-    MessageBoxW(owner, (L"导出成功！\n" + dir).c_str(), L"提示", MB_ICONINFORMATION);
+    MessageBoxW(owner, (L"导出成功！\n" + sub).c_str(), L"提示", MB_ICONINFORMATION);
 }
 
 void ExportExcel(HWND owner, const ExtractResult& r) {
     if (!r.success) return;
     std::wstring path = util::OpenSaveDialog(owner, true,
         L"Excel (*.xlsx)\0*.xlsx\0所有文件\0*.*\0\0",
-        L"xlsx", L"提取内容.xlsx", L"导出 Excel");
+        L"xlsx", L"提取内容.xlsx", L"导出 Excel", util::DownloadsDir().c_str());
     if (path.empty()) return;
 
     auto findImgByRel = [&](const std::string& rel) -> const ExtractImage* {
@@ -822,7 +833,7 @@ void ExportWord(HWND owner, const ExtractResult& r) {
     if (!r.success) return;
     std::wstring path = util::OpenSaveDialog(owner, true,
         L"Word (*.docx)\0*.docx\0所有文件\0*.*\0\0",
-        L"docx", L"提取内容.docx", L"导出 Word");
+        L"docx", L"提取内容.docx", L"导出 Word", util::DownloadsDir().c_str());
     if (path.empty()) return;
 
     // 正文按原文排版嵌图；docx 内不会出现 ![...] 标签
@@ -845,7 +856,9 @@ LRESULT CALLBACK ResultProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         st = static_cast<ResultState*>(cs->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
         st->hwnd = hwnd;
-        return TRUE;
+        // 必须交给 DefWindowProc：标题文字正是在这一步被存入窗口的，
+        // 直接 return TRUE 会导致标题栏永远空白
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
     case WM_CTLCOLORSTATIC: {
         HDC hdc = reinterpret_cast<HDC>(wParam);
@@ -1209,7 +1222,7 @@ void RunMagicEraseImpl(HWND owner, Document* doc, ProgressState& prog, ExtractRe
     std::vector<BYTE> cropBytes(cropPng.begin(), cropPng.end());
 
     // 全程只提示「正在消除中」
-    prog.status = L"正在消除中…";
+    prog.status = L"正在消除中";
     if (prog.hwnd && IsWindow(prog.hwnd))
         SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), prog.status.c_str());
 
@@ -1276,7 +1289,7 @@ void RunMagicEraseImpl(HWND owner, Document* doc, ProgressState& prog, ExtractRe
         maskUrl = EnsureMediakitUrl(maskFileId);
     }
 
-    prog.status = L"正在消除中…";
+    prog.status = L"正在消除中";
     if (prog.hwnd && IsWindow(prog.hwnd))
         SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), prog.status.c_str());
 
@@ -1296,13 +1309,17 @@ void RunMagicEraseImpl(HWND owner, Document* doc, ProgressState& prog, ExtractRe
     }
 
     doc->PushUndo();
-    auto ann = std::make_unique<ImageAnn>();
-    ann->image = std::move(resultBmp);
-    ann->rect = RectF(static_cast<REAL>(ox), static_cast<REAL>(oy),
-                      static_cast<REAL>(ann->image->GetWidth()),
-                      static_cast<REAL>(ann->image->GetHeight()));
-    ann->style.color = RGB(0, 0, 0);
-    doc->annotations.push_back(std::move(ann));
+    // 直接烙进底图：消除结果覆盖写入 base 像素，不生成可选中/可拖动的标注图层
+    {
+        Gdiplus::Graphics g(doc->base.get());
+        g.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+        g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+        g.DrawImage(resultBmp.get(), Gdiplus::Rect(ox, oy,
+                    static_cast<INT>(resultBmp->GetWidth()),
+                    static_cast<INT>(resultBmp->GetHeight())),
+                    0, 0, resultBmp->GetWidth(), resultBmp->GetHeight(), Gdiplus::UnitPixel);
+    }
+    resultBmp.reset();
 
     // remove consumed brush strokes
     if (!brushIdx.empty()) {
@@ -1317,6 +1334,7 @@ void RunMagicEraseImpl(HWND owner, Document* doc, ProgressState& prog, ExtractRe
         doc->selectedIdx = -1;
     }
     if (hasRegion) doc->ClearRegion();
+    doc->selectedIdx = -1;
 
     Canvas::Instance().Refresh();
     App::Instance().ShowStatusMessage(L"魔法消除完成");
@@ -1343,7 +1361,7 @@ void RunExtractFlow(HWND owner, Document* doc) {
 
     ExtractResult result;
     ProgressState prog;
-    prog.status = L"正在识别…";
+    prog.status = L"正在识别";
     prog.cancelText = L"取消识别";
     std::unique_ptr<Bitmap> clone(
         composite->Clone(0, 0, composite->GetWidth(), composite->GetHeight(), PixelFormat32bppARGB));
@@ -1387,7 +1405,7 @@ void RunExtractFlow(HWND owner, Document* doc) {
 void RunMagicErase(HWND owner, Document* doc) {
     ExtractResult dummy;
     ProgressState prog;
-    prog.status = L"正在消除中…";
+    prog.status = L"正在消除中";
     prog.cancelText = L"取消消除";
     prog.work = [&]() {
         RunMagicEraseImpl(owner, doc, prog, dummy);

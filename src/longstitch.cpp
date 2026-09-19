@@ -340,6 +340,9 @@ Stitcher::MatchResult Stitcher::detect(const FrameData& anchor, const FrameData&
         r.dy = chosen;
         r.stickyTop = topBand;
         r.stickyBottom = botBand;
+#ifdef LC_DEBUG
+        std::fprintf(stdout, "  [detect] Scrolled dy=%d stickyTop=%d stickyBottom=%d\n", chosen, topBand, botBand);
+#endif
         return r;
     }
 
@@ -429,20 +432,22 @@ int Stitcher::alignCanvasTailToFrame(const FrameData& frame, int stickyTop, int 
     const int K = (std::min)(28, canvasRows_ / 2);
     if (K < 8) return -1;
     const int stride = width_ * 4;
-    const int H = frame.h;
+    // 搜索范围限定在内容区 [stickyTop, e-K]：避免误匹配页眉/页脚
+    const int lo = stickyTop;
+    const int hi = e - K;
+    if (hi < lo) return -1;
     int bestOff = -1;
     double best = 1e9;
-    const int lo = 0;
-    const int hi = H - K;
-    for (int off = lo; off <= hi; off += 2) {
+    // 逐行搜索（步长 1）：奇数滚动偏移也能精确对齐，杜绝 1px 接缝错位
+    for (int off = lo; off <= hi; ++off) {
         double sum = 0.0;
         int cnt = 0;
-        for (int i = 0; i < K; i += 2) {
+        for (int i = 0; i < K; ++i) {
             const uint8_t* rc = canvas_.data() +
                 static_cast<size_t>(canvasRows_ - K + i) * stride;
             const uint8_t* rf = frame.pixels.data() +
                 static_cast<size_t>(off + i) * stride;
-            for (int x = 0; x < stride; x += 10) {
+            for (int x = 0; x < stride; x += 8) {
                 sum += std::abs(rc[x] - rf[x]) +
                        std::abs(rc[x + 1] - rf[x + 1]) +
                        std::abs(rc[x + 2] - rf[x + 2]);
@@ -450,11 +455,10 @@ int Stitcher::alignCanvasTailToFrame(const FrameData& frame, int stickyTop, int 
             }
         }
         const double avg = cnt ? sum / cnt : 1e9;
-        // 只认最优分数；并列时取更大 off（更保守，减少重复）
-        if (avg < best - 0.4) {
+        // 严格最小值；并列时天然保留更小 off
+        // （重复可被 appendNewFrom 保险丝修正，缺失不可逆，故偏向更小 off）
+        if (avg < best - 1e-6) {
             best = avg;
-            bestOff = off;
-        } else if (bestOff >= 0 && off > bestOff && avg <= best + 0.4 && avg < 24.0) {
             bestOff = off;
         }
     }
@@ -462,6 +466,10 @@ int Stitcher::alignCanvasTailToFrame(const FrameData& frame, int stickyTop, int 
     if (bestOff < 0 || best > 30.0) return -1;
     int s = bestOff + K;
     if (s < stickyTop) s = stickyTop;
+#ifdef LC_DEBUG
+    std::fprintf(stdout, "  [align] canvasRows=%d K=%d lo=%d hi=%d bestOff=%d best=%.2f -> s=%d (e=%d)\n",
+                 canvasRows_, K, lo, hi, bestOff, best, s, e);
+#endif
     return s;
 }
 
@@ -603,8 +611,9 @@ int Stitcher::resolveAppendStart(const FrameData& frame, int stickyTop, int e,
         }
     }
     if (lastOn > stickyTop + 2) {
-        // 接缝必须靠近底部新增区（避免把上半屏误判成“已结束”）
-        if (e - lastOn >= 2 && e - lastOn <= (e - stickyTop) * 3 / 4) {
+        // 仅当新增区较小且紧贴已对齐尾部时才采信回溯结果；
+        // 增量过大会把已上画布的内容整段重复贴一遍，宁可提示重对齐。
+        if (e - lastOn >= 2 && e - lastOn <= 50) {
             if (outScore) *outScore = 22.0;
             return lastOn + 1;
         }
@@ -614,7 +623,9 @@ int Stitcher::resolveAppendStart(const FrameData& frame, int stickyTop, int e,
 
 Event Stitcher::appendNewFrom(const FrameData& frame, int s, int e, bool gap) {
     if (e <= s) return Event::NoChange;
-    // 保险丝：若 frame[s] 与画布末尾几乎相同，说明 s 偏小，向后跳，避免重复
+    // 保险丝：若 frame[s] 与画布末尾几乎逐像素相同，说明 s 偏小，向后跳，避免重复。
+    // 阈值收到 1.5：真实重复是像素级相同(avg≈0)；相邻但不同的内容行 avg 通常 2~5，
+    // 旧阈值 9.0 会把"相邻相似行"误判为重复跳过，造成 1 行缺口并级联成大段重复。
     if (canvasRows_ >= 8 && !frame.pixels.empty()) {
         const int stride = width_ * 4;
         for (int guard = 0; guard < 48 && s < e; ++guard) {
@@ -628,7 +639,7 @@ Event Stitcher::appendNewFrom(const FrameData& frame, int s, int e, bool gap) {
                        std::abs(rf[x + 2] - rc[x + 2]);
                 ++cnt;
             }
-            if (cnt > 0 && sum / cnt < 9.0) {
+            if (cnt > 0 && sum / cnt < 1.5) {
                 ++s;
                 continue;
             }
@@ -637,6 +648,9 @@ Event Stitcher::appendNewFrom(const FrameData& frame, int s, int e, bool gap) {
     }
     if (e <= s) return Event::NoChange;
     if (e - s < kMinNewRows) return Event::NoChange;
+#ifdef LC_DEBUG
+    std::fprintf(stdout, "  [appendNewFrom] s=%d e=%d gap=%d canvasRows_before=%d\n", s, e, (int)gap, canvasRows_);
+#endif
     if (gap) appendSeparator();
     if (!appendChecked(frame, s, e)) return Event::Capped;
     trimDuplicateTailMut();
@@ -679,11 +693,46 @@ int Stitcher::trimDuplicateTailMut() {
                     bestGap = gap;
                 }
             }
-            // 仅当几乎逐像素相同才裁，避免丢掉相似但不同的表格内容
-            if (bestGap > 0 && best < 8.0) {
+            // 只裁「逐像素相同」的大块重复；阈值收到 1.0：
+            // 真实重复(同内容再贴一遍)是像素级相同 avg≈0；周期性条纹/相似表格行 avg 通常 1~5，
+            // 旧阈值 8.0 会误裁周期性内容并级联成错位。
+            if (bestGap > 0 && best < 1.0) {
+                // 边界判别：周期性内容（斑马条纹/表格行）的"上方"会同样匹配，
+                // 真正重复接缝的"上方"则不一致。周期性 → 不裁，避免吞掉真实内容。
+                const int aboveAvail = (std::min)(
+                    (std::min)(canvasRows_ - B - 1, canvasRows_ - bestGap - B - 1), 8);
+                bool periodic = false;
+                if (aboveAvail > 0) {
+                    double aboveSum = 0.0;
+                    int aboveCnt = 0;
+                    for (int i = 1; i <= aboveAvail; ++i) {
+                        const uint8_t* ra = canvas_.data() +
+                            static_cast<size_t>(canvasRows_ - B - i) * stride;
+                        const uint8_t* rb = canvas_.data() +
+                            static_cast<size_t>(canvasRows_ - bestGap - B - i) * stride;
+                        for (int x = 0; x < stride; x += 8) {
+                            aboveSum += std::abs(ra[x] - rb[x]) +
+                                        std::abs(ra[x + 1] - rb[x + 1]) +
+                                        std::abs(ra[x + 2] - rb[x + 2]);
+                            ++aboveCnt;
+                        }
+                    }
+                    const double aboveAvg = aboveCnt ? aboveSum / aboveCnt : 1e9;
+                    // 上方也匹配(周期性) → 不裁；上方明显断裂(真正接缝) → 裁
+                    if (aboveAvg < 15.0) periodic = true;
+                }
+                if (periodic) {
+#ifdef LC_DEBUG
+                    std::fprintf(stdout, "  [trim] periodic skip B=%d gap=%d\n", B, bestGap);
+#endif
+                    break;
+                }
                 canvasRows_ -= B;
                 const size_t nb = static_cast<size_t>(canvasRows_) * stride;
                 if (canvas_.size() > nb) canvas_.resize(nb);
+#ifdef LC_DEBUG
+                std::fprintf(stdout, "  [trim] removed B=%d gap=%d canvasRows=%d\n", B, bestGap, canvasRows_);
+#endif
                 removed += B;
             } else {
                 break;
@@ -875,13 +924,24 @@ Event Stitcher::Process(const FrameData& frame, double nowSec) {
             anchorTime_ = nowSec;
             return Event::NoChange;
         }
-        if (framesSimilar(anchor_, frame)) {
+        // Unknown（detect 失败）时用相似度兜底；Scrolled 已确认滚动，不再短路，
+        // 否则慢滚/低对比页会被误判 NoChange 漏帧。
+        if (m.kind == MatchResult::Kind::Unknown && framesSimilar(anchor_, frame)) {
             anchorTime_ = nowSec;
             return Event::NoChange;
         }
-        if (m.stickyTop > 0) stickyTop_ = m.stickyTop;
-        if (m.stickyBottom > 0) stickyBottom_ = m.stickyBottom;
-        if (m.kind == MatchResult::Kind::Scrolled && m.stickyBottom > 0) {
+        // sticky 状态：Scrolled 时无条件刷新（清除陈旧的页脚判定，避免内容滚到底仍被裁）；
+        // Unknown 时只采纳正向检出，不因检测失败而清零已有判定。
+        if (m.kind == MatchResult::Kind::Scrolled) {
+            stickyTop_ = m.stickyTop;
+            stickyBottom_ = m.stickyBottom;
+        } else {
+            if (m.stickyTop > 0) stickyTop_ = m.stickyTop;
+            if (m.stickyBottom > 0) stickyBottom_ = m.stickyBottom;
+        }
+        if (m.stickyBottom > 0) {
+            // 只要检出固定页脚就裁掉画布尾部的页脚行（不限于 Scrolled）：
+            // 首帧整段入画布会带入页脚，未裁则后续 tail-align 在内容区找不到含页脚的尾部。
             trimStickyFooter(m.stickyBottom, frame);
         }
         const int st = stickyTop_;

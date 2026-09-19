@@ -384,9 +384,7 @@ void Canvas::OnPaint() {
     int iw = static_cast<int>(doc_->Width() * z);
     int ih = static_cast<int>(doc_->Height() * z);
 
-    // shadow + image
-    SolidBrush shadow(Color(60, 0, 0, 0));
-    g.FillRectangle(&shadow, ix + 3, iy + 4, iw, ih);
+    // image
     g.SetInterpolationMode(z >= 1.0f ? InterpolationModeNearestNeighbor
                                       : InterpolationModeHighQualityBicubic);
     g.DrawImage(doc_->base.get(), Rect(ix, iy, iw, ih),

@@ -14,6 +14,13 @@ $exeName = -join @([char]0x622A,[char]0x56FE,[char]0x5DE5,[char]0x5177) + ".exe"
 $iniName = -join @([char]0x622A,[char]0x56FE,[char]0x5DE5,[char]0x5177) + ".ini"
 
 $pkg = Join-Path (Get-Location) $pkgName
+# 保留用户已有配置（含 MinerUToken / VolcApiKey），打包重建时不清掉
+$iniBackup = $null
+$oldIni = Join-Path $pkg $iniName
+if (Test-Path $oldIni) {
+    $iniBackup = Join-Path $env:TEMP ("screenshot_tool_ini_" + [guid]::NewGuid().ToString("N") + ".ini")
+    Copy-Item $oldIni $iniBackup -Force
+}
 if (Test-Path $pkg) { Remove-Item -Recurse -Force $pkg }
 New-Item -ItemType Directory -Force -Path $pkg | Out-Null
 
@@ -21,6 +28,9 @@ Copy-Item $src (Join-Path $pkg $exeName) -Force
 Copy-Item $src (Join-Path $pkg "ScreenshotTool.exe") -Force
 
 $iniPath = Join-Path $pkg $iniName
+if ($iniBackup -and (Test-Path $iniBackup)) {
+    Move-Item $iniBackup $iniPath -Force
+}
 if (!(Test-Path $iniPath)) {
     @(
         "[Settings]",
