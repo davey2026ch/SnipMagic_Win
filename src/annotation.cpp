@@ -287,15 +287,16 @@ void TextAnn::Measure(Graphics& g) {
     FontFamily family(L"Microsoft YaHei");
     INT styleBits = FontStyleRegular | (bold ? FontStyleBold : 0);
     Font font(&family, fontSize, styleBits, UnitPixel);
-    RectF layout = rect;
-    layout.Width = 0;
-    layout.Height = 0;
     StringFormat fmt;
     fmt.SetTrimming(StringTrimmingNone);
+    // 默认最大宽度，避免插入后变成极长一条；之后可用角点调整
+    const float maxW = 260.0f;
+    RectF layout(0, 0, maxW, 0);
     RectF bound;
-    g.MeasureString(text.c_str(), -1, &font, PointF(rect.X, rect.Y), &fmt, &bound);
+    g.MeasureString(text.c_str(), -1, &font, layout, &fmt, &bound);
     float pad = 6.0f;
-    rect.Width = (std::max)(bound.Width + pad * 2, fontSize);
+    rect.Width = (std::min)(maxW, bound.Width + pad * 2);
+    if (rect.Width < fontSize) rect.Width = fontSize;
     rect.Height = (std::max)(bound.Height + pad * 2, fontSize * 1.2f);
 }
 

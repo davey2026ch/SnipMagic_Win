@@ -93,6 +93,15 @@ void CaptureOverlay::CaptureVirtualScreen() {
     // We'll store via screen origin on window pos itself (overlay covers virtual screen at x,y)
 }
 
+static BOOL CALLBACK HideOurWindowsProc(HWND hwnd, LPARAM) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == GetCurrentProcessId() && IsWindowVisible(hwnd)) {
+        ShowWindow(hwnd, SW_HIDE);
+    }
+    return TRUE;
+}
+
 void CaptureOverlay::Start(HWND owner) {
     if (hwnd_) return;
     HINSTANCE hi = GetModuleHandleW(nullptr);
@@ -108,16 +117,21 @@ void CaptureOverlay::Start(HWND owner) {
         x = 0; y = 0;
     }
 
-    // Hide owner so it's not in the capture
-    bool wasVisible = owner && IsWindowVisible(owner);
-    if (wasVisible) ShowWindow(owner, SW_HIDE);
-
-    // Hide our tooltip / other tool windows that may still be on screen
+    // 无论按钮还是快捷键截图：先隐藏本进程所有可见窗口，避免把自己截进去
+    bool wasVisible = owner && (IsWindowVisible(owner) || IsIconic(owner));
+    if (owner) {
+        ShowWindow(owner, SW_HIDE);
+        ShowWindow(owner, SW_MINIMIZE);
+        ShowWindow(owner, SW_HIDE);
+    }
+    EnumWindows(HideOurWindowsProc, 0);
     HWND tip = FindWindowW(L"ScreenshotToolTooltip", nullptr);
-    if (tip && IsWindowVisible(tip)) ShowWindow(tip, SW_HIDE);
+    if (tip) ShowWindow(tip, SW_HIDE);
 
-    // Brief delay so hide completes
-    Sleep(80);
+    // 等待窗口真正从屏幕消失
+    Sleep(180);
+    EnumWindows(HideOurWindowsProc, 0);
+    Sleep(40);
 
     // Capture screen without cursor
     HDC hdcScreen = GetDC(nullptr);
@@ -148,9 +162,9 @@ void CaptureOverlay::Start(HWND owner) {
         SetForegroundWindow(hwnd_);
         SetFocus(hwnd_);
         SetCapture(hwnd_);
-        // 保持系统光标可见，便于框选
         while (ShowCursor(TRUE) < 0) {}
     } else if (owner && wasVisible) {
+        ShowWindow(owner, SW_RESTORE);
         ShowWindow(owner, SW_SHOW);
     }
 }
@@ -163,6 +177,7 @@ void CaptureOverlay::Cancel() {
     dragging_ = false;
     screen_.reset();
     if (owner_ && IsWindow(owner_)) {
+        ShowWindow(owner_, SW_RESTORE);
         ShowWindow(owner_, SW_SHOW);
         SetForegroundWindow(owner_);
     }
@@ -331,10 +346,11 @@ void CaptureOverlay::FinishCapture() {
     screen_.reset();
 
     if (owner && IsWindow(owner)) {
+        ShowWindow(owner, SW_RESTORE);
         ShowWindow(owner, SW_SHOW);
         SetForegroundWindow(owner);
         if (hasResult_) {
-            PostMessageW(owner, WM_APP + 1, 0, 0); // capture finished
+            PostMessageW(owner, WM_APP + 1, 0, 0);
         }
     }
 }

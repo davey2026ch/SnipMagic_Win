@@ -198,10 +198,8 @@ bool SettingsDialog::Show(HWND owner) {
                                 owner, nullptr, hi, &st);
     if (!hwnd) return false;
     SetWindowTextW(hwnd, L"设置");
-    if (g_setBlankIcon) {
-        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_setBlankIcon));
-        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(g_setBlankIcon));
-    }
+    SendMessageW(hwnd, WM_SETICON, ICON_BIG, 0);
+    SendMessageW(hwnd, WM_SETICON, ICON_SMALL, 0);
 
     HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");

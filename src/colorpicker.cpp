@@ -6,7 +6,7 @@ using namespace Gdiplus;
 namespace {
 
 const int kDlgW = 520;
-const int kDlgH = 700;
+const int kDlgH = 640;
 const int kWheelSize = 200;
 
 HICON g_cpBlankIcon = nullptr;
@@ -82,7 +82,7 @@ RECT SliderRect(HWND hwnd, int idx) {
     RECT rc; GetClientRect(hwnd, &rc);
     int left = 90;
     int right = rc.right - 100;
-    int top = 250 + idx * 46;
+    int top = 240 + idx * 44;
     return { left, top + 6, right, top + 28 };
 }
 
@@ -380,11 +380,11 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                               &fg);
             }
 
-            g.DrawString(L"HEX", -1, &font, PointF(16.0f, 490.0f), &fg);
+            g.DrawString(L"HEX", -1, &font, PointF(16.0f, 468.0f), &fg);
             SolidBrush pc(ToGpColor(st->Current(), static_cast<BYTE>(st->alpha)));
-            g.FillEllipse(&pc, static_cast<REAL>(rc.right - 48), 490.0f, 28.0f, 28.0f);
+            g.FillEllipse(&pc, static_cast<REAL>(rc.right - 48), 468.0f, 28.0f, 28.0f);
             Pen ep(Color(255, 100, 100, 100), 1);
-            g.DrawEllipse(&ep, static_cast<REAL>(rc.right - 48), 490.0f, 28.0f, 28.0f);
+            g.DrawEllipse(&ep, static_cast<REAL>(rc.right - 48), 468.0f, 28.0f, 28.0f);
         }
 
         BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
@@ -612,10 +612,8 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha) {
                                 owner, nullptr, hi, &st);
     if (!hwnd) return st.result;
     SetWindowTextW(hwnd, L"选择颜色");
-    if (g_cpBlankIcon) {
-        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_cpBlankIcon));
-        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(g_cpBlankIcon));
-    }
+    SendMessageW(hwnd, WM_SETICON, ICON_BIG, 0);
+    SendMessageW(hwnd, WM_SETICON, ICON_SMALL, 0);
 
     HINSTANCE comctl = GetModuleHandleW(L"comctl32.dll");
     // create child controls
@@ -627,20 +625,21 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha) {
     int hexW = alphaSr.right - alphaSr.left;
     HWND hex = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", st.hex.c_str(),
                                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                               alphaSr.left, 484, hexW, 30, hwnd,
+                               alphaSr.left, 462, hexW, 30, hwnd,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HEX)), hi, nullptr);
     // 吸管：HEX 下方单独一行，同样对齐
     HWND eye = CreateWindowW(L"BUTTON", L"吸管（全屏取色）",
                              WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                             alphaSr.left, 530, hexW, 34, hwnd,
+                             alphaSr.left, 502, hexW, 34, hwnd,
                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_EYEDROP)), hi, nullptr);
+    // 确定/取消紧挨吸管，减少下方留白
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                            kDlgW - 230, kDlgH - 70, 90, 36, hwnd,
+                            kDlgW - 240, 548, 100, 34, hwnd,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OK)), hi, nullptr);
     HWND cancel = CreateWindowW(L"BUTTON", L"取消",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                kDlgW - 120, kDlgH - 70, 90, 36, hwnd,
+                                kDlgW - 120, 548, 100, 34, hwnd,
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CANCEL)), hi, nullptr);
 
     for (int i = 0; i < 5; ++i) {

@@ -64,7 +64,6 @@ void PaintSwatch(HWND btn, COLORREF c, BYTE alpha) {
     RECT rc;
     GetClientRect(btn, &rc);
     Graphics g(hdc);
-    g.Clear(Color(255, 250, 250, 250));
     SolidBrush br(ToGpColor(c, alpha));
     g.FillRectangle(&br, 0, 0, rc.right, rc.bottom);
     ReleaseDC(btn, hdc);
@@ -240,15 +239,17 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
         return st.result;
     }
     SetWindowTextW(hwnd, caption);
+    // 标题栏不显示图标，只显示文字
+    SendMessageW(hwnd, WM_SETICON, ICON_BIG, 0);
+    SendMessageW(hwnd, WM_SETICON, ICON_SMALL, 0);
     if (g_blankIcon) {
-        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_blankIcon));
-        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(g_blankIcon));
+        SetClassLongPtrW(hwnd, GCLP_HICON, reinterpret_cast<LONG_PTR>(nullptr));
+        SetClassLongPtrW(hwnd, GCLP_HICONSM, reinterpret_cast<LONG_PTR>(nullptr));
     }
 
     HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
 
-    // 标签：无边框、无特殊底色
     auto mkLabel = [&](const wchar_t* text, int x, int y, int w, int hh, int id = 0) -> HWND {
         HWND hwndCtl = CreateWindowW(L"STATIC", text,
                                      WS_CHILD | WS_VISIBLE | SS_LEFT,
@@ -258,50 +259,51 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
         return hwndCtl;
     };
 
-    mkLabel(L"文字内容", 20, 14, 100, 22);
-    // 默认不显示纵向滚动条；内容过多时 ES_AUTOVSCROLL 仍可滚动编辑
+    mkLabel(L"文字内容", 20, 12, 100, 22);
+    // 内容过多时显示纵向滚动条（WS_VSCROLL + ES_AUTOVSCROLL）
     HWND text = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
                                 existing ? existing->text.c_str() : L"",
-                                WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
-                                20, 38, kW - 56, 120, hwnd, Hm(TXC_EDIT), hi, nullptr);
+                                WS_CHILD | WS_VISIBLE | WS_VSCROLL |
+                                    ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
+                                20, 36, kW - 56, 150, hwnd, Hm(TXC_EDIT), hi, nullptr);
 
-    mkLabel(L"字号", 20, 174, 48, 22);
+    mkLabel(L"字号", 20, 200, 48, 22);
     wchar_t szbuf[16];
     swprintf_s(szbuf, L"%d", existing ? static_cast<int>(existing->fontSize) : 20);
     CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", szbuf,
                     WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
-                    70, 170, 70, 28, hwnd, Hm(TXC_FONTSIZE), hi, nullptr);
+                    70, 196, 70, 28, hwnd, Hm(TXC_FONTSIZE), hi, nullptr);
 
     HWND bold = CreateWindowW(L"BUTTON", L"加粗 (Ctrl+B)",
                               WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                              160, 170, 130, 28, hwnd, Hm(TXC_BOLD), hi, nullptr);
+                              160, 196, 130, 28, hwnd, Hm(TXC_BOLD), hi, nullptr);
     if (existing && existing->bold) SendMessageW(bold, BM_SETCHECK, BST_CHECKED, 0);
 
     HWND trans = CreateWindowW(L"BUTTON", L"背景透明",
                                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                              310, 170, 110, 28, hwnd, Hm(TXC_TRANS), hi, nullptr);
+                              310, 196, 110, 28, hwnd, Hm(TXC_TRANS), hi, nullptr);
     bool transDefault = existing ? existing->transparentBg : true;
     SendMessageW(trans, BM_SETCHECK, transDefault ? BST_CHECKED : BST_UNCHECKED, 0);
 
-    mkLabel(L"文字颜色", 20, 216, 80, 22);
+    // 文字颜色 / 背景颜色：同一套 ColorPicker 逻辑
+    mkLabel(L"文字颜色", 20, 242, 80, 22);
     st.colorBtn = CreateWindowW(L"BUTTON", L"",
                                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_NOTIFY,
-                                100, 210, 48, 28, hwnd, Hm(TXC_COLOR), hi, nullptr);
+                                100, 236, 52, 30, hwnd, Hm(TXC_COLOR), hi, nullptr);
 
-    st.bgColorLabel = mkLabel(L"背景颜色", 180, 216, 80, 22, TXC_BGCOLOR);
-    // label shouldn't be clickable for color - use static id 0
+    st.bgColorLabel = mkLabel(L"背景颜色", 180, 242, 80, 22);
     SetWindowLongPtrW(st.bgColorLabel, GWLP_ID, 0);
     st.bgColorBtn = CreateWindowW(L"BUTTON", L"",
-                                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                  260, 210, 48, 28, hwnd, Hm(TXC_BGCOLOR), hi, nullptr);
+                                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_NOTIFY,
+                                  260, 236, 52, 30, hwnd, Hm(TXC_BGCOLOR), hi, nullptr);
 
-    // 紧凑：按钮紧挨颜色行下方
+    // 紧凑：按钮紧贴颜色行，下方少留白
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                            kW - 240, 260, 100, 36, hwnd, Hm(TXC_OK), hi, nullptr);
+                            kW - 240, 285, 100, 34, hwnd, Hm(TXC_OK), hi, nullptr);
     HWND cancel = CreateWindowW(L"BUTTON", L"取消",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                kW - 120, 260, 100, 36, hwnd, Hm(TXC_CANCEL), hi, nullptr);
+                                kW - 120, 285, 100, 34, hwnd, Hm(TXC_CANCEL), hi, nullptr);
 
     for (HWND c = GetWindow(hwnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
         if (font) SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);

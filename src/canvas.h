@@ -103,10 +103,13 @@ private:
     float startIx_ = 0, startIy_ = 0;
     float lastIx_ = 0, lastIy_ = 0;
     float moveOriginX_ = 0, moveOriginY_ = 0;
+    int pendingTextEdit_ = -1; // 点击文字本体时待打开编辑（未拖动则编辑）
     std::unique_ptr<Annotation> draft_;
     std::unique_ptr<Annotation> moveBackup_;
     RectF resizeStartBounds_{};
     HandleId activeHandle_ = HandleId::None;
+
+    void OpenTextEditor(int hitIndex);
 
     // double buffering
     void* bits_ = nullptr;

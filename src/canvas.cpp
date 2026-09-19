@@ -446,7 +446,7 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
     if (tool_ == Tool::View) return;
 
     if (tool_ == Tool::Select) {
-        // resize handle?
+        // 先命中控制点 → 缩放
         if (doc_->GetSelected()) {
             auto h = HitResizeHandle(ix, iy);
             if (h != HandleId::None) {
@@ -463,13 +463,26 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
             doc_->ClearRegion();
             doc_->selectedIdx = hit;
             doc_->annotations[hit]->selected = true;
+            // 若尚未选中，先选中以便立刻看到 8 个控制点
+            if (hit >= 0) {
+                auto h2 = HitResizeHandle(ix, iy);
+                if (h2 != HandleId::None) {
+                    dragMode_ = DragMode::Resize;
+                    activeHandle_ = h2;
+                    resizeStartBounds_ = {};
+                    doc_->GetSelected()->GetBounds(resizeStartBounds_);
+                    Refresh();
+                    return;
+                }
+            }
             dragMode_ = DragMode::Move;
             moveOriginX_ = ix;
             moveOriginY_ = iy;
             moveBackup_ = doc_->annotations[hit]->Clone();
             doc_->PushUndo();
+            // 文字：点在框内且未拖动时，松开后打开编辑
+            pendingTextEdit_ = (doc_->annotations[hit]->type == AnnType::Text) ? hit : -1;
         } else {
-            // rubber-band region selection
             doc_->ClearSelection();
             doc_->ClearRegion();
             dragMode_ = DragMode::Rubber;
@@ -480,14 +493,24 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
     }
 
     if (tool_ == Tool::Text) {
-        // 已有文字：单击仅选中（可拖控制点调宽高），双击才编辑
         int hit = doc_->HitTest(ix, iy);
         if (hit >= 0 && doc_->annotations[hit]->type == AnnType::Text) {
             doc_->ClearSelection();
-            doc_->annotations[hit]->selected = true;
+            doc_->ClearRegion();
             doc_->selectedIdx = hit;
-            Refresh();
-            App::Instance().ShowStatusMessage(L"双击文字可编辑；拖动角点可调整文字框大小");
+            doc_->annotations[hit]->selected = true;
+            // 控制点 → 缩放
+            auto h = HitResizeHandle(ix, iy);
+            if (h != HandleId::None) {
+                dragMode_ = DragMode::Resize;
+                activeHandle_ = h;
+                resizeStartBounds_ = {};
+                doc_->GetSelected()->GetBounds(resizeStartBounds_);
+                Refresh();
+                return;
+            }
+            // 点在文字框内 → 编辑
+            OpenTextEditor(hit);
             return;
         }
         TextDialogResult tr = TextDialog::Show(hwnd_, Settings().drawColor);
@@ -512,7 +535,7 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
             int idx = static_cast<int>(doc_->annotations.size());
             doc_->annotations.push_back(std::move(t));
             doc_->selectedIdx = idx;
-            App::Instance().ShowStatusMessage(L"文字已添加：双击编辑，拖角点调整框大小");
+            App::Instance().ShowStatusMessage(L"文字已添加：点文字框可编辑，拖角点调整宽高");
         }
         Refresh();
         return;
@@ -653,7 +676,26 @@ void Canvas::OnMouseUp(int x, int y) {
         return;
     }
 
-    if (dragMode_ == DragMode::Move || dragMode_ == DragMode::Resize) {
+    if (dragMode_ == DragMode::Move) {
+        float dx = std::fabs(ix - startIx_);
+        float dy = std::fabs(iy - startIy_);
+        bool clicked = (dx < 3.0f && dy < 3.0f);
+        if (clicked && pendingTextEdit_ >= 0) {
+            // 点在文字框内 → 打开编辑
+            int idx = pendingTextEdit_;
+            pendingTextEdit_ = -1;
+            dragMode_ = DragMode::None;
+            OpenTextEditor(idx);
+            return;
+        }
+        pendingTextEdit_ = -1;
+        dragMode_ = DragMode::None;
+        Refresh();
+        return;
+    }
+
+    if (dragMode_ == DragMode::Resize) {
+        pendingTextEdit_ = -1;
         dragMode_ = DragMode::None;
         Refresh();
         return;
@@ -675,7 +717,45 @@ void Canvas::OnMouseUp(int x, int y) {
         App::Instance().UpdateStatus();
         return;
     }
+    pendingTextEdit_ = -1;
     dragMode_ = DragMode::None;
+}
+
+void Canvas::OpenTextEditor(int hitIndex) {
+    if (!doc_ || hitIndex < 0 || hitIndex >= static_cast<int>(doc_->annotations.size()))
+        return;
+    if (doc_->annotations[hitIndex]->type != AnnType::Text) return;
+    auto* t = static_cast<TextAnn*>(doc_->annotations[hitIndex].get());
+    RectF keep = t->rect;
+    TextDialogResult tr = TextDialog::Show(hwnd_, t->style.color, t);
+    if (tr.ok && !tr.text.empty()) {
+        doc_->PushUndo();
+        t->text = tr.text;
+        t->fontSize = tr.fontSize;
+        t->bold = tr.bold;
+        t->transparentBg = tr.transparentBg;
+        t->style.color = tr.color;
+        t->style.alpha = tr.alpha;
+        t->bgColor = tr.bgColor;
+        // 保留用户手动调过的框宽高，便于排版
+        if (keep.Width > 20 && keep.Height > 16) {
+            t->rect = keep;
+        } else {
+            auto tmp = std::make_unique<Bitmap>(1, 1, PixelFormat32bppARGB);
+            Graphics mg(tmp.get());
+            t->Measure(mg);
+        }
+        doc_->ClearSelection();
+        t->selected = true;
+        doc_->selectedIdx = hitIndex;
+        Refresh();
+        App::Instance().ShowStatusMessage(L"文字已更新；拖角点可调整宽高");
+    } else {
+        doc_->ClearSelection();
+        t->selected = true;
+        doc_->selectedIdx = hitIndex;
+        Refresh();
+    }
 }
 
 // Need move to work: enhance OnMouseDown to clone selected before move, and OnMouseMove applies delta from start.
@@ -687,35 +767,8 @@ void Canvas::OnDoubleClick(int x, int y) {
     ClientToImage(x, y, ix, iy);
     int hit = doc_->HitTest(ix, iy);
     if (hit < 0) return;
-    auto* ann = doc_->annotations[hit].get();
-    if (ann->type == AnnType::Text) {
-        auto* t = static_cast<TextAnn*>(ann);
-        // 保留用户已调整的框大小，仅回填内容与样式
-        RectF keep = t->rect;
-        TextDialogResult tr = TextDialog::Show(hwnd_, t->style.color, t);
-        if (tr.ok && !tr.text.empty()) {
-            doc_->PushUndo();
-            t->text = tr.text;
-            t->fontSize = tr.fontSize;
-            t->bold = tr.bold;
-            t->transparentBg = tr.transparentBg;
-            t->style.color = tr.color;
-            t->style.alpha = tr.alpha;
-            t->bgColor = tr.bgColor;
-            // 若用户没改过尺寸（仍是默认小框），才 Measure；否则保留手动调整的大小
-            if (keep.Width < 20 || keep.Height < 16) {
-                auto tmp = std::make_unique<Bitmap>(1, 1, PixelFormat32bppARGB);
-                Graphics mg(tmp.get());
-                t->Measure(mg);
-            } else {
-                t->rect = keep;
-            }
-            doc_->ClearSelection();
-            t->selected = true;
-            doc_->selectedIdx = hit;
-            Refresh();
-            App::Instance().ShowStatusMessage(L"文字已更新；可拖动角点调整框大小");
-        }
+    if (doc_->annotations[hit]->type == AnnType::Text) {
+        OpenTextEditor(hit);
     }
 }
 

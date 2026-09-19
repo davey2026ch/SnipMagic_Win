@@ -380,24 +380,23 @@ void App::DrawToolIcon(Graphics& g, const ToolButton& b, const RECT& rc,
         break;
     }
     case ID_TOOL_BRUSH: {
-        // 格式刷 / 记号笔：宽头 + 握柄
-        // 刷头（宽扁，朝左下）
-        PointF tip[4] = {
-            PointF(cx - 10.0f, cy + 8.0f),
-            PointF(cx + 1.0f, cy + 8.0f),
-            PointF(cx + 3.0f, cy + 3.0f),
-            PointF(cx - 8.0f, cy + 3.0f)
-        };
-        g.FillPolygon(&br, tip, 4);
-        // 金属箍
-        Pen band(ink, 2.4f);
-        g.DrawLine(&band, cx - 7.0f, cy + 3.0f, cx + 2.0f, cy + 3.0f);
-        // 握柄斜向上
-        Pen handle(ink, 3.2f);
+        // 格式刷：竖直握柄 + 金属箍 + 下宽刷毛（非牙刷）
+        Pen handle(ink, 3.0f);
         handle.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
-        g.DrawLine(&handle, cx + 2.0f, cy + 2.0f, cx + 9.0f, cy - 9.0f);
-        // 高光
-        g.DrawLine(&penThin, cx - 6.0f, cy + 5.0f, cx - 2.0f, cy + 5.0f);
+        g.DrawLine(&handle, cx, cy - 11.0f, cx, cy - 3.0f);
+        // 箍
+        g.FillRectangle(&br, cx - 4.5f, cy - 3.0f, 9.0f, 3.5f);
+        // 刷毛：下端略宽
+        PointF bristles[4] = {
+            PointF(cx - 4.5f, cy + 0.5f),
+            PointF(cx + 4.5f, cy + 0.5f),
+            PointF(cx + 6.5f, cy + 10.0f),
+            PointF(cx - 6.5f, cy + 10.0f)
+        };
+        g.FillPolygon(&br, bristles, 4);
+        // 刷毛纹理
+        g.DrawLine(&penThin, cx - 2.0f, cy + 2.0f, cx - 3.5f, cy + 8.5f);
+        g.DrawLine(&penThin, cx + 2.0f, cy + 2.0f, cx + 3.5f, cy + 8.5f);
         break;
     }
     case ID_TOOL_VIEW: {
