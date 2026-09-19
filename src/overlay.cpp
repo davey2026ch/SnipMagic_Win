@@ -1,5 +1,6 @@
 #include "overlay.h"
 #include "settings.h"
+#include "longcapture.h"
 #include "version.h"
 
 using namespace Gdiplus;
@@ -54,7 +55,8 @@ LRESULT CALLBACK CaptureOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         self.Cancel();
         return 0;
     case WM_CAPTURECHANGED:
-        if (reinterpret_cast<HWND>(lParam) != hwnd) self.Cancel();
+        // 主动收尾（长截图/区域截图完成）时不要 Cancel，否则会把主窗口弹回来
+        if (!self.finishing_ && reinterpret_cast<HWND>(lParam) != hwnd) self.Cancel();
         return 0;
     case WM_ERASEBKGND:
         return 1;
@@ -211,7 +213,7 @@ void CaptureOverlay::UncloakAndShow(HWND hwnd) {
     ShowWindow(hwnd, SW_SHOW);
 }
 
-void CaptureOverlay::Start(HWND owner) {
+void CaptureOverlay::Start(HWND owner, CaptureMode mode) {
     if (hwnd_) return;
     HINSTANCE hi = GetModuleHandleW(nullptr);
     EnsureClass(hi);
@@ -225,6 +227,8 @@ void CaptureOverlay::Start(HWND owner) {
         h = GetSystemMetrics(SM_CYSCREEN);
         x = 0; y = 0;
     }
+    vx_ = x;
+    vy_ = y;
 
     // 无论按钮还是快捷键：同一套强制隐藏，确认不可见后再截
     ForceHideForCapture(owner);
@@ -242,10 +246,13 @@ void CaptureOverlay::Start(HWND owner) {
     DeleteObject(hbm);
 
     owner_ = owner;
+    mode_ = mode;
     hasResult_ = false;
     result_.reset();
     dragging_ = false;
+    finishing_ = false;
     memset(&sel_, 0, sizeof(sel_));
+    memset(&lastRegionScreen_, 0, sizeof(lastRegionScreen_));
 
     hwnd_ = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -259,6 +266,7 @@ void CaptureOverlay::Start(HWND owner) {
         SetFocus(hwnd_);
         SetCapture(hwnd_);
         while (ShowCursor(TRUE) < 0) {}
+        InvalidateRect(hwnd_, nullptr, FALSE);
     } else if (owner && IsWindow(owner)) {
         UncloakAndShow(owner);
         SetForegroundWindow(owner);
@@ -267,6 +275,7 @@ void CaptureOverlay::Start(HWND owner) {
 
 void CaptureOverlay::Cancel() {
     if (!hwnd_) return;
+    finishing_ = false;
     ReleaseCapture();
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
@@ -347,7 +356,9 @@ void CaptureOverlay::OnPaint(HDC hdc) {
     {
         FontFamily family(L"Microsoft YaHei");
         Font font(&family, 13, FontStyleRegular, UnitPixel);
-        const wchar_t* hint = L"拖动鼠标框选截图区域  ·  Esc 取消";
+        const wchar_t* hint = (mode_ == CaptureMode::Long)
+            ? L"框选长截图区域后松开，再滚动页面  ·  点「完成」结束  ·  Esc 取消"
+            : L"拖动鼠标框选截图区域  ·  Esc 取消";
         RectF layout;
         g.MeasureString(hint, -1, &font, PointF(0, 0), &layout);
         float hx = (w - layout.Width) * 0.5f;
@@ -431,14 +442,47 @@ void CaptureOverlay::FinishCapture() {
     int sw = std::abs(sel_.right - sel_.left);
     int sh = std::abs(sel_.bottom - sel_.top);
 
+    // 客户区坐标 → 屏幕坐标（覆盖层铺在虚拟屏上）
+    lastRegionScreen_.left = vx_ + sx;
+    lastRegionScreen_.top = vy_ + sy;
+    lastRegionScreen_.right = lastRegionScreen_.left + sw;
+    lastRegionScreen_.bottom = lastRegionScreen_.top + sh;
+
+    const CaptureMode mode = mode_;
+    HWND owner = owner_;
+    finishing_ = true;
+
+    if (mode == CaptureMode::Long) {
+        // 关闭遮罩，主窗口保持隐藏；直接启动长截图会话（不依赖异步消息）
+        ReleaseCapture();
+        if (hwnd_) {
+            DestroyWindow(hwnd_);
+            hwnd_ = nullptr;
+        }
+        dragging_ = false;
+        screen_.reset();
+        hasResult_ = false;
+        result_.reset();
+        finishing_ = false;
+
+        if (owner && IsWindow(owner)) {
+            // 确保主窗口仍隐藏
+            ShowWindow(owner, SW_HIDE);
+        }
+        LongCapture::Instance().Start(owner, lastRegionScreen_);
+        return;
+    }
+
     result_ = util::CropBitmap(screen_.get(), sx, sy, sw, sh);
     hasResult_ = result_ != nullptr;
 
-    HWND owner = owner_;
     ReleaseCapture();
-    DestroyWindow(hwnd_);
-    hwnd_ = nullptr;
+    if (hwnd_) {
+        DestroyWindow(hwnd_);
+        hwnd_ = nullptr;
+    }
     screen_.reset();
+    finishing_ = false;
 
     if (owner && IsWindow(owner)) {
         UncloakAndShow(owner);

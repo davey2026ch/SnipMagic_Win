@@ -7,7 +7,7 @@
 namespace {
 
 const int kW = 760;
-const int kH = 470;
+const int kH = 520;
 
 HICON g_setBlankIcon = nullptr;
 
@@ -40,7 +40,8 @@ enum {
     IDC_MINERU_TOKEN = 3010,
     IDC_MINERU_EYE = 3011,
     IDC_VOLC_KEY = 3012,
-    IDC_VOLC_EYE = 3013
+    IDC_VOLC_EYE = 3013,
+    IDC_LONG_HOTKEY = 3014
 };
 
 struct SetDlgState {
@@ -161,7 +162,25 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 st->draft.hotkeyVk = v;
                 st->draft.hotkeyText = HotkeyToText(m, v);
             } else {
-                MessageBoxW(hwnd, L"快捷键格式无效，示例：Ctrl+Shift+R", L"提示", MB_ICONWARNING);
+                MessageBoxW(hwnd, L"区域截图快捷键格式无效，示例：Ctrl+Shift+R", L"提示", MB_ICONWARNING);
+                return 0;
+            }
+
+            wchar_t lbuf[256] = {};
+            GetWindowTextW(GetDlgItem(hwnd, IDC_LONG_HOTKEY), lbuf, 256);
+            UINT lm = 0, lv = 0;
+            if (ParseHotkeyText(lbuf, lm, lv) && lv != 0) {
+                st->draft.longHotkeyModifiers = lm;
+                st->draft.longHotkeyVk = lv;
+                st->draft.longHotkeyText = HotkeyToText(lm, lv);
+            } else {
+                MessageBoxW(hwnd, L"长截图快捷键格式无效，示例：Ctrl+Shift+E", L"提示", MB_ICONWARNING);
+                return 0;
+            }
+            if (st->draft.hotkeyModifiers == st->draft.longHotkeyModifiers &&
+                st->draft.hotkeyVk == st->draft.longHotkeyVk) {
+                MessageBoxW(hwnd, L"区域截图与长截图的快捷键不能相同，请修改其中一个。",
+                            L"提示", MB_ICONWARNING);
                 return 0;
             }
             int theme = static_cast<int>(SendMessageW(GetDlgItem(hwnd, IDC_THEME), CB_GETCURSEL, 0, 0));
@@ -301,8 +320,12 @@ bool SettingsDialog::Show(HWND owner) {
         return h;
     };
 
-    label(L"截图快捷键", 20, y);
+    label(L"区域截图", 20, y);
     edit(IDC_HOTKEY, st.draft.hotkeyText.c_str(), 140, y - 3, 300);
+    y += 42;
+
+    label(L"长截图", 20, y);
+    edit(IDC_LONG_HOTKEY, st.draft.longHotkeyText.c_str(), 140, y - 3, 300);
     y += 42;
 
     label(L"主题", 20, y);
@@ -427,6 +450,9 @@ bool SettingsDialog::Show(HWND owner) {
     s.hotkeyModifiers = st.draft.hotkeyModifiers;
     s.hotkeyVk = st.draft.hotkeyVk;
     s.hotkeyText = st.draft.hotkeyText;
+    s.longHotkeyModifiers = st.draft.longHotkeyModifiers;
+    s.longHotkeyVk = st.draft.longHotkeyVk;
+    s.longHotkeyText = st.draft.longHotkeyText;
     s.theme = st.draft.theme;
     s.mosaicSize = st.draft.mosaicSize;
     s.lineThickness = st.draft.lineThickness;

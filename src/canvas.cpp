@@ -364,10 +364,12 @@ void Canvas::OnPaint() {
         FontFamily family(L"Microsoft YaHei");
         Font font(&family, 16, FontStyleRegular, UnitPixel);
         SolidBrush fg(ToGpColor(Settings().TextColor()));
-        const wchar_t* msg = L"点击「截图」或按 Ctrl+Shift+R 开始截图";
+        const std::wstring msg =
+            L"点击「截图」(" + Settings().hotkeyText +
+            L") 或「长截图」(" + Settings().longHotkeyText + L") 开始";
         RectF layout;
-        g.MeasureString(msg, -1, &font, PointF(0, 0), &layout);
-        g.DrawString(msg, -1, &font,
+        g.MeasureString(msg.c_str(), -1, &font, PointF(0, 0), &layout);
+        g.DrawString(msg.c_str(), -1, &font,
                      PointF((w - layout.Width) / 2, (h - layout.Height) / 2),
                      &fg);
         BitBlt(hdc, 0, 0, w, h, memDc_, 0, 0, SRCCOPY);

@@ -30,6 +30,10 @@ add_executable(ScreenshotTool WIN32
     src/ziputil.h
     src/extract.h
     src/extract.cpp
+    src/longstitch.h
+    src/longstitch.cpp
+    src/longcapture.h
+    src/longcapture.cpp
     src/app.h
     src/app.cpp
 )

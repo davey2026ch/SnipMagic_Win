@@ -8,14 +8,20 @@ enum class ThemeMode {
 };
 
 enum class HotkeyAction {
-    Capture = 0
+    Capture = 0,
+    LongCapture = 1
 };
 
 struct AppSettings {
-    // Hotkey: modifiers use MOD_* flags; vk is virtual key code
+    // 区域截图热键：modifiers use MOD_* flags; vk is virtual key code
     UINT hotkeyModifiers = MOD_CONTROL | MOD_SHIFT;
     UINT hotkeyVk        = 'R';
     std::wstring hotkeyText = L"Ctrl+Shift+R";
+
+    // 长截图热键
+    UINT longHotkeyModifiers = MOD_CONTROL | MOD_SHIFT;
+    UINT longHotkeyVk        = 'E';
+    std::wstring longHotkeyText = L"Ctrl+Shift+E";
 
     ThemeMode theme = ThemeMode::System;
     int mosaicSize      = 10;

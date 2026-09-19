@@ -5,6 +5,7 @@
 #include "colorpicker.h"
 #include "compareview.h"
 #include "extract.h"
+#include "longcapture.h"
 #include "version.h"
 #include <winuser.h>
 
@@ -13,6 +14,7 @@ using namespace Gdiplus;
 namespace {
 const wchar_t* kMainClass = L"ScreenshotToolMainWindow";
 const int kHotkeyId = 1;
+const int kLongHotkeyId = 2;
 
 bool IsDark() { return Settings().IsDarkTheme(); }
 
@@ -52,12 +54,15 @@ LRESULT CALLBACK HotkeyKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
         (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) && lParam) {
         const auto* ks = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
         const auto& s = Settings();
+        HWND hwnd = App::Instance().Hwnd();
+        if (!hwnd) return CallNextHookEx(reinterpret_cast<HHOOK>(g_kbHook), nCode, wParam, lParam);
+
         if (ks->vkCode == s.hotkeyVk && HotkeyModifiersDown(s.hotkeyModifiers)) {
-            HWND hwnd = App::Instance().Hwnd();
-            if (hwnd) {
-                // 强制接管：吞掉按键，占用该快捷键的其他程序不会收到
-                PostMessageW(hwnd, WM_HOTKEY, static_cast<WPARAM>(kHotkeyId), 0);
-            }
+            PostMessageW(hwnd, WM_HOTKEY, static_cast<WPARAM>(kHotkeyId), 0);
+            return 1;
+        }
+        if (ks->vkCode == s.longHotkeyVk && HotkeyModifiersDown(s.longHotkeyModifiers)) {
+            PostMessageW(hwnd, WM_HOTKEY, static_cast<WPARAM>(kLongHotkeyId), 0);
             return 1;
         }
     }
@@ -276,13 +281,19 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         OnKeyDown(wParam);
         return 0;
     case WM_HOTKEY:
-        OnHotkey();
+        OnHotkey(wParam);
         return 0;
     case WM_APP_CAPTURE_DONE:
         OnCaptureFinished();
         return 0;
     case WM_APP_BEGIN_CAPTURE:
         StartCaptureNow();
+        return 0;
+    case WM_APP_LONG_REGION:
+        OnLongRegionSelected();
+        return 0;
+    case WM_APP_LONG_DONE:
+        OnLongCaptureFinished(wParam != 0);
         return 0;
     case WM_LBUTTONDOWN:
         OnLButtonDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
@@ -367,7 +378,11 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     case WM_DESTROY:
         UnregisterHotKey(hwnd, kHotkeyId);
+        UnregisterHotKey(hwnd, kLongHotkeyId);
         RemoveHotkeyHook();
+        if (LongCapture::Instance().IsActive()) {
+            LongCapture::Instance().Cancel();
+        }
         PostQuitMessage(0);
         return 0;
     case WM_DPICHANGED: {
@@ -410,6 +425,7 @@ void App::BuildToolbars() {
         topBtns_.push_back(b);
     };
     addTop(ID_CMD_CAPTURE, L"截图");
+    addTop(ID_CMD_LONG_CAPTURE, L"长截图");
     addTop(ID_CMD_MOSAIC, L"马赛克");
     addTop(ID_CMD_EXTRACT, L"提取内容");
     addTop(ID_CMD_MAGIC_ERASE, L"魔法消除");
@@ -1070,6 +1086,7 @@ void App::OnCommand(int id) {
 
     switch (id) {
     case ID_CMD_CAPTURE: StartCapture(); break;
+    case ID_CMD_LONG_CAPTURE: StartLongCapture(); break;
     case ID_CMD_MOSAIC: Canvas::Instance().ApplyMosaicToSelection(); break;
     case ID_CMD_EXTRACT: extract::RunExtractFlow(hwnd_, ActiveDoc()); break;
     case ID_CMD_MAGIC_ERASE: extract::RunMagicErase(hwnd_, ActiveDoc()); break;
@@ -1128,19 +1145,36 @@ void App::OnKeyDown(WPARAM vk) {
     }
 }
 
-void App::OnHotkey() {
-    // 与点击「截图」按钮走完全相同的 StartCapture
-    StartCapture();
+void App::OnHotkey(WPARAM id) {
+    if (static_cast<int>(id) == kLongHotkeyId) {
+        StartLongCapture();
+    } else {
+        StartCapture();
+    }
 }
 
 void App::StartCapture() {
     if (CaptureOverlay::Instance().IsOpen()) return;
+    if (LongCapture::Instance().IsActive()) return;
     if (capturePending_) return;
 
-    // 按钮 / 快捷键同一路径：
-    // 1) 立刻隐藏（用户马上看不到窗口）
-    // 2) 异步 + 短延迟后再截，等系统把窗口真正从屏幕拿掉
-    // 同步在 WM_HOTKEY 里直接 BitBlt 时，窗口常还在，会被截进去
+    longModePending_ = false;
+    BeginCaptureHide();
+    capturePending_ = true;
+    if (hwnd_) {
+        PostMessageW(hwnd_, WM_APP_BEGIN_CAPTURE, 0, 0);
+        SetTimer(hwnd_, kTimerBeginCapture, 150, nullptr);
+    } else {
+        StartCaptureNow();
+    }
+}
+
+void App::StartLongCapture() {
+    if (CaptureOverlay::Instance().IsOpen()) return;
+    if (LongCapture::Instance().IsActive()) return;
+    if (capturePending_) return;
+
+    longModePending_ = true;
     BeginCaptureHide();
     capturePending_ = true;
     if (hwnd_) {
@@ -1185,8 +1219,10 @@ void App::StartCaptureNow() {
     if (hwnd_) KillTimer(hwnd_, kTimerBeginCapture);
     capturePending_ = false;
     if (CaptureOverlay::Instance().IsOpen()) return;
-    // Start 内部会 ForceHideForCapture：等窗口确认不可见后再 BitBlt
-    CaptureOverlay::Instance().Start(hwnd_);
+    if (LongCapture::Instance().IsActive()) return;
+    const CaptureMode mode = longModePending_ ? CaptureMode::Long : CaptureMode::Region;
+    longModePending_ = false;
+    CaptureOverlay::Instance().Start(hwnd_, mode);
 }
 
 void App::OnCaptureFinished() {
@@ -1194,6 +1230,52 @@ void App::OnCaptureFinished() {
     if (!bmp) return;
     AddDocument(std::move(bmp));
     ShowStatusMessage(L"截图完成，已新建页签");
+}
+
+void App::OnLongRegionSelected() {
+    // 覆盖层已在框选结束时直接启动会话；这里只兜底
+    if (LongCapture::Instance().IsActive()) return;
+    RECT rc = CaptureOverlay::Instance().LastRegionScreen();
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+    if (w < 20 || h < 20) {
+        CaptureOverlay::UncloakAndShow(hwnd_);
+        if (hwnd_) SetForegroundWindow(hwnd_);
+        ShowStatusMessage(L"长截图区域过小，已取消");
+        return;
+    }
+    LongCapture::Instance().Start(hwnd_, rc);
+    ShowStatusMessage(L"长截图进行中：滚动页面，完成后点「完成」");
+}
+
+void App::OnLongCaptureFinished(bool hasResult) {
+    auto bmp = LongCapture::Instance().TakeResult();
+    const int gaps = LongCapture::Instance().LastGapCount();
+    const int suspects = LongCapture::Instance().LastSuspectCount();
+    if (hwnd_ && IsWindow(hwnd_)) {
+        CaptureOverlay::UncloakAndShow(hwnd_);
+        ShowWindow(hwnd_, SW_SHOW);
+        SetForegroundWindow(hwnd_);
+    }
+    if (hasResult && bmp) {
+        AddDocument(std::move(bmp));
+        if (gaps > 0 || suspects > 0) {
+            std::wstring warn = L"长截图已生成";
+            if (gaps > 0) warn += util::Format(L"，但有 %d 处内容可能缺失（滚动过快）", gaps);
+            if (suspects > 0) warn += util::Format(L"，%d 处接缝可能异常", suspects);
+            warn += L"。\n可在图中查找浅色分隔带；必要时放慢滚动重截。";
+            MessageBoxW(hwnd_, warn.c_str(), APP_NAME, MB_ICONWARNING | MB_OK);
+            ShowStatusMessage(util::Format(L"长截图完成 · 缺失 %d · 接缝异常 %d", gaps, suspects));
+        } else {
+            ShowStatusMessage(L"长截图完成，已新建页签");
+        }
+    } else if (!hasResult) {
+        if (gaps > 0 || suspects > 0) {
+            ShowStatusMessage(util::Format(L"长截图已取消（曾检测到缺失 %d · 接缝异常 %d）", gaps, suspects));
+        } else {
+            ShowStatusMessage(L"长截图已取消");
+        }
+    }
 }
 
 void App::AddDocument(std::unique_ptr<Bitmap> bmp) {
@@ -1371,23 +1453,46 @@ void App::OnSettingsChanged() {
 
 void App::UpdateHotkey() {
     UnregisterHotKey(hwnd_, kHotkeyId);
+    UnregisterHotKey(hwnd_, kLongHotkeyId);
     RemoveHotkeyHook();
 
-    UINT mods = Settings().hotkeyModifiers | 0x4000; // MOD_NOREPEAT
-    if (RegisterHotKey(hwnd_, kHotkeyId, mods, Settings().hotkeyVk)) {
-        ShowStatusMessage(L"快捷键已注册：" + Settings().hotkeyText);
-        return;
-    }
-    if (RegisterHotKey(hwnd_, kHotkeyId, Settings().hotkeyModifiers, Settings().hotkeyVk)) {
-        ShowStatusMessage(L"快捷键已注册：" + Settings().hotkeyText);
-        return;
+    bool needHook = false;
+    std::wstring failMsg;
+
+    // 区域截图
+    {
+        UINT mods = Settings().hotkeyModifiers | 0x4000; // MOD_NOREPEAT
+        if (RegisterHotKey(hwnd_, kHotkeyId, mods, Settings().hotkeyVk) ||
+            RegisterHotKey(hwnd_, kHotkeyId, Settings().hotkeyModifiers, Settings().hotkeyVk)) {
+            ShowStatusMessage(L"区域截图快捷键已注册：" + Settings().hotkeyText);
+        } else {
+            needHook = true;
+            failMsg += L"区域截图「" + Settings().hotkeyText + L"」\n";
+        }
     }
 
-    // 系统注册失败 → 多半被其他程序占用
+    // 长截图
+    {
+        UINT mods = Settings().longHotkeyModifiers | 0x4000;
+        if (RegisterHotKey(hwnd_, kLongHotkeyId, mods, Settings().longHotkeyVk) ||
+            RegisterHotKey(hwnd_, kLongHotkeyId, Settings().longHotkeyModifiers, Settings().longHotkeyVk)) {
+            ShowStatusMessage(L"长截图快捷键已注册：" + Settings().longHotkeyText);
+        } else {
+            needHook = true;
+            failMsg += L"长截图「" + Settings().longHotkeyText + L"」\n";
+        }
+    }
+
+    if (!needHook) return;
+
+    // 有一方被占用时：全部改走钩子，避免 RegisterHotKey 与钩子对同一组合键双触发
+    UnregisterHotKey(hwnd_, kHotkeyId);
+    UnregisterHotKey(hwnd_, kLongHotkeyId);
+
     std::wstring msg =
-        L"快捷键「" + Settings().hotkeyText + L"」已被其他程序占用。\n\n"
-        L"本工具将强制接管该快捷键（忽略原程序的占用）。\n"
-        L"按下该组合键时仍会截图；原程序一般不会再响应。\n\n"
+        L"以下快捷键已被其他程序占用：\n" + failMsg + L"\n"
+        L"本工具将强制接管（忽略原程序占用）。\n"
+        L"按下对应组合键时仍会触发截图；原程序一般不会再响应。\n\n"
         L"若不想冲突，可在「设置」里改成其他快捷键。";
     if (hwnd_) {
         MessageBoxW(hwnd_, msg.c_str(), APP_NAME, MB_ICONWARNING | MB_OK);
@@ -1395,10 +1500,9 @@ void App::UpdateHotkey() {
         MessageBoxW(nullptr, msg.c_str(), APP_NAME, MB_ICONWARNING | MB_OK);
     }
 
-    // 强制接管：低级键盘钩子截获该组合键并触发截图
     InstallHotkeyHook();
     if (g_kbHook) {
-        ShowStatusMessage(L"快捷键被占用，已强制接管：" + Settings().hotkeyText);
+        ShowStatusMessage(L"快捷键被占用，已强制接管：" + failMsg);
     } else {
         ShowStatusMessage(L"快捷键被占用且强制接管失败，请在设置中更换快捷键");
     }

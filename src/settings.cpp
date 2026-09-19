@@ -157,6 +157,28 @@ void AppSettings::Load() {
         hotkeyText = L"Ctrl+Shift+R";
     }
 
+    std::wstring lhk = IniValue(L"Settings", L"LongHotkey", L"Ctrl+Shift+E");
+    UINT lm = 0, lv = 0;
+    if (ParseHotkeyText(lhk, lm, lv) && lv != 0) {
+        longHotkeyModifiers = lm;
+        longHotkeyVk = lv;
+        longHotkeyText = HotkeyToText(lm, lv);
+    } else {
+        longHotkeyModifiers = MOD_CONTROL | MOD_SHIFT;
+        longHotkeyVk = 'E';
+        longHotkeyText = L"Ctrl+Shift+E";
+    }
+    // 区域/长截图热键不得相同
+    if (longHotkeyModifiers == hotkeyModifiers && longHotkeyVk == hotkeyVk) {
+        longHotkeyModifiers = MOD_CONTROL | MOD_SHIFT;
+        longHotkeyVk = 'E';
+        longHotkeyText = L"Ctrl+Shift+E";
+        if (longHotkeyModifiers == hotkeyModifiers && longHotkeyVk == hotkeyVk) {
+            longHotkeyVk = (hotkeyVk == 'E') ? 'L' : 'E';
+            longHotkeyText = HotkeyToText(longHotkeyModifiers, longHotkeyVk);
+        }
+    }
+
     int th = IniInt(L"Settings", L"Theme", 0);
     if (th < 0 || th > 2) th = 0;
     theme = static_cast<ThemeMode>(th);
@@ -177,6 +199,9 @@ void AppSettings::Save() const {
     IniWrite(L"Settings", L"Hotkey", hotkeyText);
     IniWriteInt(L"Settings", L"HotkeyModifiers", static_cast<int>(hotkeyModifiers));
     IniWriteInt(L"Settings", L"HotkeyVk", static_cast<int>(hotkeyVk));
+    IniWrite(L"Settings", L"LongHotkey", longHotkeyText);
+    IniWriteInt(L"Settings", L"LongHotkeyModifiers", static_cast<int>(longHotkeyModifiers));
+    IniWriteInt(L"Settings", L"LongHotkeyVk", static_cast<int>(longHotkeyVk));
     IniWriteInt(L"Settings", L"Theme", static_cast<int>(theme));
     IniWriteInt(L"Settings", L"MosaicSize", mosaicSize);
     IniWriteInt(L"Settings", L"LineThickness", lineThickness);

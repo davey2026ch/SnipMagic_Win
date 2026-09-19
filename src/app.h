@@ -32,7 +32,10 @@ public:
     HWND Hwnd() const { return hwnd_; }
 
     void StartCapture();
+    void StartLongCapture();
     void OnCaptureFinished();
+    void OnLongRegionSelected();
+    void OnLongCaptureFinished(bool hasResult);
     void AddDocument(std::unique_ptr<Gdiplus::Bitmap> bmp);
     void ActivateDoc(int idx);
     // 返回 true 表示已成功保存；用户取消保存对话框或保存失败时返回 false
@@ -68,7 +71,7 @@ private:
     void OnSize();
     void OnCommand(int id);
     void OnKeyDown(WPARAM vk);
-    void OnHotkey();
+    void OnHotkey(WPARAM id);
     void OnLButtonDown(int x, int y);
     void OnRButtonDown(int x, int y);
     void OnMouseMove(int x, int y);
@@ -91,6 +94,7 @@ private:
     HWND status_ = nullptr;
     int nextDocId_ = 1;
     bool capturePending_ = false;
+    bool longModePending_ = false;
 
     std::vector<std::unique_ptr<Document>> docs_;
     int activeIdx_ = -1;
@@ -148,6 +152,7 @@ enum : int {
     ID_CMD_EXIT_COMPARE = 112,
     ID_CMD_EXTRACT = 113,
     ID_CMD_MAGIC_ERASE = 114,
+    ID_CMD_LONG_CAPTURE = 115,
 
     ID_TOOL_SELECT = 200,
     ID_TOOL_BRUSH = 201,
@@ -175,6 +180,8 @@ enum : int {
 
     WM_APP_CAPTURE_DONE = WM_APP + 1,
     WM_APP_BEGIN_CAPTURE = WM_APP + 2,
+    WM_APP_LONG_REGION = WM_APP + 3,
+    WM_APP_LONG_DONE = WM_APP + 4,
 
     kTimerTooltip = 1,
     kTimerBeginCapture = 2
