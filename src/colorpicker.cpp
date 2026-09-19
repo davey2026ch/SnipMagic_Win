@@ -9,6 +9,24 @@ const int kDlgW = 520;
 const int kDlgH = 700;
 const int kWheelSize = 200;
 
+HICON g_cpBlankIcon = nullptr;
+
+HICON MakeBlankIconCP(int size) {
+    Bitmap bmp(size, size, PixelFormat32bppPARGB);
+    HBITMAP hbm = nullptr;
+    bmp.GetHBITMAP(Color(0, 0, 0, 0), &hbm);
+    if (!hbm) return nullptr;
+    HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
+    ICONINFO ii = {};
+    ii.fIcon = TRUE;
+    ii.hbmMask = mask;
+    ii.hbmColor = hbm;
+    HICON icon = CreateIconIndirect(&ii);
+    DeleteObject(hbm);
+    DeleteObject(mask);
+    return icon;
+}
+
 struct PickState {
     HWND hwnd = nullptr;
     float h = 0, s = 1.0f, l = 0.5f;
@@ -320,6 +338,13 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         st->hwnd = hwnd;
         return TRUE;
     }
+    case WM_CTLCOLORSTATIC: {
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(40, 40, 40));
+        static HBRUSH br = CreateSolidBrush(RGB(250, 250, 250));
+        return reinterpret_cast<LRESULT>(br);
+    }
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
@@ -488,11 +513,14 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 void EnsurePickClasses(HINSTANCE hi) {
     static bool done = false;
     if (done) return;
+    if (!g_cpBlankIcon) g_cpBlankIcon = MakeBlankIconCP(16);
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     wc.hInstance = hi;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = nullptr;
+    wc.hIcon = g_cpBlankIcon;
+    wc.hIconSm = g_cpBlankIcon;
 
     wc.lpfnWndProc = PickProc;
     wc.lpszClassName = kPickClass;
@@ -584,6 +612,10 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha) {
                                 owner, nullptr, hi, &st);
     if (!hwnd) return st.result;
     SetWindowTextW(hwnd, L"选择颜色");
+    if (g_cpBlankIcon) {
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_cpBlankIcon));
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(g_cpBlankIcon));
+    }
 
     HINSTANCE comctl = GetModuleHandleW(L"comctl32.dll");
     // create child controls

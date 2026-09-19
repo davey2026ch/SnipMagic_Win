@@ -45,6 +45,7 @@ LRESULT CALLBACK CaptureOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         return 0;
     case WM_MOUSEMOVE:
         self.OnMouseMove(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        InvalidateRect(hwnd, nullptr, FALSE); // 刷新自定义光标
         return 0;
     case WM_KEYDOWN:
         self.OnKey(wParam);
@@ -147,7 +148,8 @@ void CaptureOverlay::Start(HWND owner) {
         SetForegroundWindow(hwnd_);
         SetFocus(hwnd_);
         SetCapture(hwnd_);
-        ShowCursor(FALSE);
+        // 保持系统光标可见，便于框选
+        while (ShowCursor(TRUE) < 0) {}
     } else if (owner && wasVisible) {
         ShowWindow(owner, SW_SHOW);
     }
@@ -156,7 +158,6 @@ void CaptureOverlay::Start(HWND owner) {
 void CaptureOverlay::Cancel() {
     if (!hwnd_) return;
     ReleaseCapture();
-    ShowCursor(TRUE);
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
     dragging_ = false;
@@ -247,6 +248,26 @@ void CaptureOverlay::OnPaint(HDC hdc) {
         g.DrawString(hint, -1, &font, PointF(hx, hy), &fg);
     }
 
+    // 高对比自定义十字光标，暗色遮罩下也能看清
+    {
+        POINT cpt;
+        GetCursorPos(&cpt);
+        ScreenToClient(hwnd_, &cpt);
+        const REAL cx = static_cast<REAL>(cpt.x);
+        const REAL cy = static_cast<REAL>(cpt.y);
+        const REAL arm = 14.0f;
+        Pen shadow(Color(255, 0, 0, 0), 4.0f);
+        Pen light(Color(255, 255, 255, 255), 2.0f);
+        Pen accent(Color(255, 0, 200, 255), 1.0f);
+        g.DrawLine(&shadow, cx - arm, cy, cx + arm, cy);
+        g.DrawLine(&shadow, cx, cy - arm, cx, cy + arm);
+        g.DrawLine(&light, cx - arm, cy, cx + arm, cy);
+        g.DrawLine(&light, cx, cy - arm, cx, cy + arm);
+        g.DrawLine(&accent, cx - 4, cy, cx + 4, cy);
+        g.DrawLine(&accent, cx, cy - 4, cx, cy + 4);
+        g.DrawEllipse(&light, cx - 3.0f, cy - 3.0f, 6.0f, 6.0f);
+    }
+
     BitBlt(hdc, 0, 0, w, h, hdcMem, 0, 0, SRCCOPY);
     SelectObject(hdcMem, old);
     DeleteObject(hbm);
@@ -305,7 +326,6 @@ void CaptureOverlay::FinishCapture() {
 
     HWND owner = owner_;
     ReleaseCapture();
-    ShowCursor(TRUE);
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
     screen_.reset();

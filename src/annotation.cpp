@@ -305,18 +305,20 @@ void TextAnn::Draw(Graphics& g) const {
     Font font(&family, fontSize, styleBits, UnitPixel);
 
     if (!transparentBg) {
-        SolidBrush bg(ToGpColor(bgColor, 230));
+        SolidBrush bg(ToGpColor(bgColor, 255));
         g.FillRectangle(&bg, rect);
     }
 
     SolidBrush br(ToGpColor(style.color, style.alpha));
     StringFormat fmt;
     fmt.SetFormatFlags(StringFormatFlagsNoClip);
+    fmt.SetTrimming(StringTrimmingNone);
     RectF layout = rect;
     layout.X += 4;
     layout.Y += 4;
     layout.Width = (std::max)(8.0f, rect.Width - 8);
     layout.Height = (std::max)(8.0f, rect.Height - 8);
+    // 按框宽度自动换行，便于用角点调整布局
     g.DrawString(text.c_str(), -1, &font, layout, &fmt, &br);
 }
 

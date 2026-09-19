@@ -8,6 +8,24 @@ namespace {
 const int kW = 560;
 const int kH = 480;
 
+HICON g_setBlankIcon = nullptr;
+
+HICON MakeBlankIconSet(int size) {
+    Bitmap bmp(size, size, PixelFormat32bppPARGB);
+    HBITMAP hbm = nullptr;
+    bmp.GetHBITMAP(Color(0, 0, 0, 0), &hbm);
+    if (!hbm) return nullptr;
+    HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
+    ICONINFO ii = {};
+    ii.fIcon = TRUE;
+    ii.hbmMask = mask;
+    ii.hbmColor = hbm;
+    HICON icon = CreateIconIndirect(&ii);
+    DeleteObject(hbm);
+    DeleteObject(mask);
+    return icon;
+}
+
 enum {
     IDC_HOTKEY = 3001,
     IDC_THEME = 3002,
@@ -62,6 +80,13 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
         st->hwnd = hwnd;
         return TRUE;
+    }
+    case WM_CTLCOLORSTATIC: {
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(40, 40, 40));
+        static HBRUSH br = CreateSolidBrush(RGB(250, 250, 250));
+        return reinterpret_cast<LRESULT>(br);
     }
     case WM_COMMAND: {
         if (!st) return 0;
@@ -133,12 +158,15 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 void EnsureClass(HINSTANCE hi) {
     static bool done = false;
     if (done) return;
+    if (!g_setBlankIcon) g_setBlankIcon = MakeBlankIconSet(16);
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = DlgProc;
     wc.hInstance = hi;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(static_cast<INT_PTR>(COLOR_WINDOW + 1));
+    wc.hIcon = g_setBlankIcon;
+    wc.hIconSm = g_setBlankIcon;
     wc.lpszClassName = kClass;
     RegisterClassExW(&wc);
     done = true;
@@ -170,6 +198,10 @@ bool SettingsDialog::Show(HWND owner) {
                                 owner, nullptr, hi, &st);
     if (!hwnd) return false;
     SetWindowTextW(hwnd, L"设置");
+    if (g_setBlankIcon) {
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_setBlankIcon));
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(g_setBlankIcon));
+    }
 
     HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");

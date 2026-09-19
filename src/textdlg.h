@@ -9,9 +9,10 @@ struct TextDialogResult {
     bool transparentBg = true;
     COLORREF color = RGB(255, 0, 0);
     BYTE alpha = 255;
+    COLORREF bgColor = RGB(255, 255, 255);
 };
 
-class TextAnn; // fwd
+class TextAnn;
 
 namespace TextDialog {
 TextDialogResult Show(HWND owner, COLORREF initialColor,

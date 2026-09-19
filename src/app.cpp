@@ -15,6 +15,71 @@ bool IsDark() { return Settings().IsDarkTheme(); }
 
 const wchar_t* kTipClass = L"ScreenshotToolTooltip";
 
+HICON g_appIcon = nullptr;
+HICON g_appIconSm = nullptr;
+HICON g_blankIcon = nullptr;
+
+HICON MakeScreenshotIcon(int size) {
+    Bitmap bmp(size, size, PixelFormat32bppPARGB);
+    {
+        Graphics g(&bmp);
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.Clear(Color(0, 0, 0, 0));
+        const REAL sz = static_cast<REAL>(size);
+        SolidBrush bg(Color(255, 24, 90, 156));
+        GraphicsPath path;
+        REAL r = sz * 0.18f;
+        path.AddArc(0.0f, 0.0f, r * 2, r * 2, 180.0f, 90.0f);
+        path.AddArc(sz - r * 2, 0.0f, r * 2, r * 2, 270.0f, 90.0f);
+        path.AddArc(sz - r * 2, sz - r * 2, r * 2, r * 2, 0.0f, 90.0f);
+        path.AddArc(0.0f, sz - r * 2, r * 2, r * 2, 90.0f, 90.0f);
+        path.CloseFigure();
+        g.FillPath(&bg, &path);
+        REAL m = sz * 0.20f;
+        Pen white(Color(255, 255, 255), (std::max)(1.2f, sz * 0.07f));
+        g.DrawRectangle(&white, m, m * 1.05f, sz - m * 2, sz - m * 2.1f);
+        REAL c = sz * 0.5f;
+        REAL t = sz * 0.14f;
+        Pen cross(Color(255, 255, 210), (std::max)(1.2f, sz * 0.06f));
+        g.DrawLine(&cross, c - t, c, c + t, c);
+        g.DrawLine(&cross, c, c - t, c, c + t);
+        SolidBrush dot(Color(255, 255, 255));
+        REAL d = (std::max)(2.0f, sz * 0.08f);
+        g.FillEllipse(&dot, m - d / 2, m * 1.05f - d / 2, d, d);
+        g.FillEllipse(&dot, sz - m - d / 2, m * 1.05f - d / 2, d, d);
+        g.FillEllipse(&dot, m - d / 2, sz - m * 1.05f - d / 2, d, d);
+        g.FillEllipse(&dot, sz - m - d / 2, sz - m * 1.05f - d / 2, d, d);
+    }
+    HBITMAP hbm = nullptr;
+    bmp.GetHBITMAP(Color(0, 0, 0, 0), &hbm);
+    if (!hbm) return nullptr;
+    HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
+    ICONINFO ii = {};
+    ii.fIcon = TRUE;
+    ii.hbmMask = mask;
+    ii.hbmColor = hbm;
+    HICON icon = CreateIconIndirect(&ii);
+    DeleteObject(hbm);
+    DeleteObject(mask);
+    return icon;
+}
+
+HICON MakeBlankIcon(int size) {
+    Bitmap bmp(size, size, PixelFormat32bppPARGB);
+    HBITMAP hbm = nullptr;
+    bmp.GetHBITMAP(Color(0, 0, 0, 0), &hbm);
+    if (!hbm) return nullptr;
+    HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
+    ICONINFO ii = {};
+    ii.fIcon = TRUE;
+    ii.hbmMask = mask;
+    ii.hbmColor = hbm;
+    HICON icon = CreateIconIndirect(&ii);
+    DeleteObject(hbm);
+    DeleteObject(mask);
+    return icon;
+}
+
 void EnsureTipClass(HINSTANCE hi) {
     static bool reg = false;
     if (reg) return;
@@ -45,7 +110,12 @@ bool App::Init(HINSTANCE hi, int nCmdShow) {
     wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wc.lpfnWndProc = App::WndProc;
     wc.hInstance = hi_;
-    wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    // 截图风格图标（任务栏/标题栏/Alt-Tab）
+    if (!g_appIcon) g_appIcon = MakeScreenshotIcon(32);
+    if (!g_appIconSm) g_appIconSm = MakeScreenshotIcon(16);
+    if (!g_blankIcon) g_blankIcon = MakeBlankIcon(16);
+    wc.hIcon = g_appIcon ? g_appIcon : LoadIcon(nullptr, IDI_APPLICATION);
+    wc.hIconSm = g_appIconSm ? g_appIconSm : wc.hIcon;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wc.lpszClassName = kMainClass;
@@ -71,6 +141,13 @@ bool App::Init(HINSTANCE hi, int nCmdShow) {
                             x, y, w, h,
                             nullptr, nullptr, hi_, this);
     if (!hwnd_) return false;
+
+    if (g_appIcon) {
+        SendMessageW(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_appIcon));
+        SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(g_appIconSm ? g_appIconSm : g_appIcon));
+        SetClassLongPtrW(hwnd_, GCLP_HICON, reinterpret_cast<LONG_PTR>(g_appIcon));
+        SetClassLongPtrW(hwnd_, GCLP_HICONSM, reinterpret_cast<LONG_PTR>(g_appIconSm ? g_appIconSm : g_appIcon));
+    }
 
     ShowWindow(hwnd_, nCmdShow);
     UpdateWindow(hwnd_);
@@ -303,34 +380,24 @@ void App::DrawToolIcon(Graphics& g, const ToolButton& b, const RECT& rc,
         break;
     }
     case ID_TOOL_BRUSH: {
-        // 油漆刷：斜握把 + 金属箍 + 刷毛块
-        // 握把
-        Pen handle(ink, 3.0f);
-        handle.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
-        g.DrawLine(&handle, cx + 7.0f, cy - 10.0f, cx + 1.0f, cy - 3.0f);
+        // 格式刷 / 记号笔：宽头 + 握柄
+        // 刷头（宽扁，朝左下）
+        PointF tip[4] = {
+            PointF(cx - 10.0f, cy + 8.0f),
+            PointF(cx + 1.0f, cy + 8.0f),
+            PointF(cx + 3.0f, cy + 3.0f),
+            PointF(cx - 8.0f, cy + 3.0f)
+        };
+        g.FillPolygon(&br, tip, 4);
         // 金属箍
-        PointF ferrule[4] = {
-            PointF(cx + 2.0f, cy - 4.0f),
-            PointF(cx - 1.0f, cy - 1.0f),
-            PointF(cx - 4.0f, cy + 2.0f),
-            PointF(cx - 1.0f, cy + 1.0f) // will refine below
-        };
-        // 更清晰的刷子轮廓
-        // 刷毛主体（左下）
-        PointF bristle[4] = {
-            PointF(cx - 1.0f, cy - 1.0f),
-            PointF(cx - 10.0f, cy + 6.0f),
-            PointF(cx - 8.0f, cy + 10.0f),
-            PointF(cx + 2.0f, cy + 3.0f)
-        };
-        g.FillPolygon(&br, bristle, 4);
-        // 箍
-        Pen ferrulePen(ink, 2.2f);
-        g.DrawLine(&ferrulePen, cx + 2.0f, cy - 4.0f, cx - 1.5f, cy + 0.5f);
-        // 刷毛纹理
-        g.DrawLine(&penThin, cx - 7.0f, cy + 5.0f, cx - 5.0f, cy + 8.0f);
-        g.DrawLine(&penThin, cx - 4.0f, cy + 4.0f, cx - 2.0f, cy + 7.0f);
-        (void)ferrule;
+        Pen band(ink, 2.4f);
+        g.DrawLine(&band, cx - 7.0f, cy + 3.0f, cx + 2.0f, cy + 3.0f);
+        // 握柄斜向上
+        Pen handle(ink, 3.2f);
+        handle.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
+        g.DrawLine(&handle, cx + 2.0f, cy + 2.0f, cx + 9.0f, cy - 9.0f);
+        // 高光
+        g.DrawLine(&penThin, cx - 6.0f, cy + 5.0f, cx - 2.0f, cy + 5.0f);
         break;
     }
     case ID_TOOL_VIEW: {
@@ -363,24 +430,33 @@ void App::DrawToolIcon(Graphics& g, const ToolButton& b, const RECT& rc,
         break;
     }
     case ID_TOOL_PEN: {
-        // 自由画笔：波浪轨迹 + 笔尖
-        PointF wave[5];
-        for (int i = 0; i < 5; ++i) {
-            float t = i / 4.0f;
-            wave[i].X = cx - 10.0f + t * 16.0f;
-            wave[i].Y = cy + 6.0f - std::sin(t * 3.14159265f * 2.0f) * 5.0f;
-        }
-        Pen wavePen(ink, 2.0f);
-        wavePen.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
-        g.DrawLines(&wavePen, wave, 5);
-        // 笔尖三角
+        // 自由画笔：连绵打圈的涂鸦轨迹
+        GraphicsPath scribble;
+        REAL x = cx - 10.0f;
+        REAL y = cy + 4.0f;
+        scribble.AddBezier(x, y,
+                           x + 2.0f, y - 8.0f,
+                           x + 6.0f, y - 8.0f,
+                           x + 5.0f, y - 1.0f);
+        scribble.AddBezier(x + 5.0f, y - 1.0f,
+                           x + 4.0f, y + 5.0f,
+                           x + 9.0f, y + 5.0f,
+                           x + 9.5f, y - 2.0f);
+        scribble.AddBezier(x + 9.5f, y - 2.0f,
+                           x + 10.0f, y - 8.0f,
+                           x + 14.0f, y - 7.0f,
+                           x + 13.0f, y + 1.0f);
+        Pen scribPen(ink, 2.0f);
+        scribPen.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
+        scribPen.SetLineJoin(LineJoinRound);
+        g.DrawPath(&scribPen, &scribble);
+        // 末端小笔尖
         PointF tip[3] = {
-            PointF(cx + 9.0f, cy - 9.0f),
-            PointF(cx + 4.0f, cy - 2.0f),
-            PointF(cx + 8.0f, cy - 1.0f)
+            PointF(cx + 12.0f, cy - 10.0f),
+            PointF(cx + 9.0f, cy - 4.0f),
+            PointF(cx + 13.5f, cy - 3.0f)
         };
         g.FillPolygon(&br, tip, 3);
-        g.DrawLine(&pen, cx + 5.0f, cy - 3.0f, cx + 2.0f, cy + 2.0f);
         break;
     }
     case ID_TOOL_RECT: {
@@ -432,11 +508,10 @@ void App::DrawToolIcon(Graphics& g, const ToolButton& b, const RECT& rc,
         break;
     }
     case ID_CMD_COLOR: {
+        // 纯色色块，无边框
         COLORREF c = Canvas::Instance().GetDrawColor();
         SolidBrush sw(ToGpColor(c));
-        g.FillRectangle(&sw, cx - 9.0f, cy - 9.0f, 18.0f, 18.0f);
-        g.DrawRectangle(&penThin, cx - 9.0f, cy - 9.0f, 18.0f, 18.0f);
-        g.DrawLine(&penThin, cx + 4.0f, cy + 4.0f, cx + 10.0f, cy - 4.0f);
+        g.FillRectangle(&sw, cx - 10.0f, cy - 10.0f, 20.0f, 20.0f);
         break;
     }
     default: {
