@@ -3,9 +3,9 @@
 #include <wchar.h>
 
 #define APP_NAME        L"截图工具"
-#define APP_VERSION     L"1.3.1"
-#define APP_VERSION_RC  1,3,1,0
-#define APP_VERSION_STR "1.3.1.0"
+#define APP_VERSION     L"1.3.2"
+#define APP_VERSION_RC  1,3,2,0
+#define APP_VERSION_STR "1.3.2.0"
 #define APP_BUILD_TIME  __DATE__ " " __TIME__
 #define APP_INI_NAME    L"截图工具.ini"
 
