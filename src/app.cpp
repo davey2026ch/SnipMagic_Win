@@ -54,10 +54,15 @@ bool App::Init(HINSTANCE hi, int nCmdShow) {
     dpi_ = 96;
     RECT desk;
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &desk, 0);
-    int w = util::Scale(1000, dpi_);
-    int h = util::Scale(700, dpi_);
-    int x = desk.left + ((desk.right - desk.left) - w) / 2;
-    int y = desk.top + ((desk.bottom - desk.top) - h) / 2;
+    int deskW = desk.right - desk.left;
+    int deskH = desk.bottom - desk.top;
+    // 初次打开：在默认尺寸上 ×2，并限制不超过工作区
+    int w = (std::min)(util::Scale(2000, dpi_), deskW - 40);
+    int h = (std::min)(util::Scale(1400, dpi_), deskH - 40);
+    if (w < util::Scale(900, dpi_)) w = (std::max)(util::Scale(900, dpi_), deskW - 80);
+    if (h < util::Scale(600, dpi_)) h = (std::max)(util::Scale(600, dpi_), deskH - 80);
+    int x = desk.left + ((deskW - w) / 2);
+    int y = desk.top + ((deskH - h) / 2);
 
     std::wstring title = std::wstring(APP_NAME) + L" " + APP_VERSION;
     hwnd_ = CreateWindowExW(WS_EX_APPWINDOW,
@@ -283,8 +288,18 @@ void App::DrawToolIcon(Graphics& g, const ToolButton& b, const RECT& rc,
         break;
     }
     case ID_TOOL_BRUSH: {
-        g.DrawLine(&pen, cx - 8.0f, cy + 8.0f, cx + 2.0f, cy - 2.0f);
-        g.FillEllipse(&br, cx + 2.0f, cy - 8.0f, 8.0f, 8.0f);
+        // 瓶刷：粗笔杆 + 扇形刷毛
+        g.DrawLine(&pen, cx - 2.0f, cy + 2.0f, cx + 7.0f, cy - 9.0f);
+        g.DrawLine(&penThin, cx + 5.0f, cy - 7.0f, cx + 9.0f, cy - 3.0f);
+        PointF bristles[4] = {
+            PointF(cx + 7.0f, cy - 9.0f),
+            PointF(cx + 2.0f, cy - 12.0f),
+            PointF(cx - 8.0f, cy + 2.0f),
+            PointF(cx - 2.0f, cy + 3.0f)
+        };
+        g.FillPolygon(&br, bristles, 4);
+        g.DrawLine(&penThin, cx - 6.0f, cy - 2.0f, cx - 3.0f, cy + 1.0f);
+        g.DrawLine(&penThin, cx - 4.0f, cy - 4.0f, cx - 1.0f, cy - 1.0f);
         break;
     }
     case ID_TOOL_VIEW: {
@@ -317,9 +332,24 @@ void App::DrawToolIcon(Graphics& g, const ToolButton& b, const RECT& rc,
         break;
     }
     case ID_TOOL_PEN: {
-        g.DrawLine(&pen, cx - 9.0f, cy + 9.0f, cx + 5.0f, cy - 5.0f);
-        g.DrawLine(&penThin, cx + 4.0f, cy - 4.0f, cx + 9.0f, cy - 9.0f);
-        g.DrawLine(&penThin, cx + 5.0f, cy - 8.0f, cx + 8.0f, cy - 5.0f);
+        // 自由画笔：波浪轨迹 + 笔尖
+        PointF wave[5];
+        for (int i = 0; i < 5; ++i) {
+            float t = i / 4.0f;
+            wave[i].X = cx - 10.0f + t * 16.0f;
+            wave[i].Y = cy + 6.0f - std::sin(t * 3.14159265f * 2.0f) * 5.0f;
+        }
+        Pen wavePen(ink, 2.0f);
+        wavePen.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
+        g.DrawLines(&wavePen, wave, 5);
+        // 笔尖三角
+        PointF tip[3] = {
+            PointF(cx + 9.0f, cy - 9.0f),
+            PointF(cx + 4.0f, cy - 2.0f),
+            PointF(cx + 8.0f, cy - 1.0f)
+        };
+        g.FillPolygon(&br, tip, 3);
+        g.DrawLine(&pen, cx + 5.0f, cy - 3.0f, cx + 2.0f, cy + 2.0f);
         break;
     }
     case ID_TOOL_RECT: {
@@ -732,6 +762,10 @@ void App::OnHotkey() {
 
 void App::StartCapture() {
     if (CaptureOverlay::Instance().IsOpen()) return;
+    // 截图前隐藏工具提示，避免悬浮提示框被截进画面
+    HideTooltip();
+    if (tipHwnd_ && IsWindow(tipHwnd_)) ShowWindow(tipHwnd_, SW_HIDE);
+    Sleep(30);
     CaptureOverlay::Instance().Start(hwnd_);
 }
 

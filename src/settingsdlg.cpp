@@ -6,8 +6,8 @@
 
 namespace {
 
-const int kW = 420;
-const int kH = 420;
+const int kW = 560;
+const int kH = 560;
 
 enum {
     IDC_HOTKEY = 3001,
@@ -190,60 +190,59 @@ bool SettingsDialog::Show(HWND owner) {
         return h;
     };
 
-    label(L"截图快捷键", 20, y);
-    edit(IDC_HOTKEY, st.draft.hotkeyText.c_str(), 140, y - 4, 220);
-    y += 44;
+    label(L"截图快捷键", 24, y);
+    edit(IDC_HOTKEY, st.draft.hotkeyText.c_str(), 160, y - 4, 320);
+    y += 50;
 
-    label(L"主题", 20, y);
+    label(L"主题", 24, y);
     HWND theme = CreateWindowW(L"COMBOBOX", L"",
                                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-                               140, y - 4, 220, 120, hwnd,
+                               160, y - 4, 320, 160, hwnd,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_THEME)), hi, nullptr);
     SendMessageW(theme, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     SendMessageW(theme, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"跟随系统"));
     SendMessageW(theme, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"明亮"));
     SendMessageW(theme, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"暗色"));
     SendMessageW(theme, CB_SETCURSEL, static_cast<int>(st.draft.theme), 0);
-    y += 44;
-
-    label(L"马赛克密度", 20, y);
-    edit(IDC_MOSAIC, std::to_wstring(st.draft.mosaicSize).c_str(), 140, y - 4, 80);
-    y += 44;
-
-    label(L"线条粗细", 20, y);
-    edit(IDC_LINE, std::to_wstring(st.draft.lineThickness).c_str(), 140, y - 4, 80);
-    y += 44;
-
-    label(L"笔刷粗细", 20, y);
-    edit(IDC_BRUSH, std::to_wstring(st.draft.brushThickness).c_str(), 140, y - 4, 80);
-    y += 44;
-
-    label(L"主题色", 20, y);
-    st.colorBtn = CreateWindowW(L"BUTTON", L"",
-                                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                140, y - 6, 48, 32, hwnd,
-                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_THEMECOLOR)), hi, nullptr);
     y += 50;
 
-    std::wstring ver = std::wstring(L"版本 ") + APP_VERSION + L"  ·  打包时间 " +
-                       std::wstring(APP_BUILD_TIME, APP_BUILD_TIME + strlen(APP_BUILD_TIME));
-    // APP_BUILD_TIME is char*
+    label(L"马赛克密度", 24, y);
+    edit(IDC_MOSAIC, std::to_wstring(st.draft.mosaicSize).c_str(), 160, y - 4, 100);
+    y += 50;
+
+    label(L"线条粗细", 24, y);
+    edit(IDC_LINE, std::to_wstring(st.draft.lineThickness).c_str(), 160, y - 4, 100);
+    y += 50;
+
+    label(L"笔刷粗细", 24, y);
+    edit(IDC_BRUSH, std::to_wstring(st.draft.brushThickness).c_str(), 160, y - 4, 100);
+    y += 50;
+
+    label(L"主题色", 24, y);
+    st.colorBtn = CreateWindowW(L"BUTTON", L"",
+                                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                160, y - 6, 56, 36, hwnd,
+                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_THEMECOLOR)), hi, nullptr);
+    y += 56;
+
+    std::wstring ver;
     {
         std::string bt = APP_BUILD_TIME;
         std::wstring wbt(bt.begin(), bt.end());
         ver = std::wstring(L"版本 ") + APP_VERSION + L"  ·  打包时间 " + wbt;
     }
     HWND verH = CreateWindowW(L"STATIC", ver.c_str(), WS_CHILD | WS_VISIBLE,
-                              20, kH - 100, kW - 40, 22, hwnd, reinterpret_cast<HMENU>(IDC_VERSION), hi, nullptr);
+                              24, kH - 110, kW - 48, 24, hwnd,
+                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_VERSION)), hi, nullptr);
     SendMessageW(verH, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
 
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                            kW - 200, kH - 70, 80, 32, hwnd,
+                            kW - 240, kH - 70, 100, 36, hwnd,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OK)), hi, nullptr);
     HWND cancel = CreateWindowW(L"BUTTON", L"取消",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                kW - 105, kH - 70, 80, 32, hwnd,
+                                kW - 120, kH - 70, 100, 36, hwnd,
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CANCEL)), hi, nullptr);
     SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);

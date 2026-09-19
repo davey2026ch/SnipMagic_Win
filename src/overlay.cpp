@@ -108,12 +108,15 @@ void CaptureOverlay::Start(HWND owner) {
     }
 
     // Hide owner so it's not in the capture
-    WINDOWPLACEMENT wp = { sizeof(wp) };
     bool wasVisible = owner && IsWindowVisible(owner);
     if (wasVisible) ShowWindow(owner, SW_HIDE);
 
+    // Hide our tooltip / other tool windows that may still be on screen
+    HWND tip = FindWindowW(L"ScreenshotToolTooltip", nullptr);
+    if (tip && IsWindowVisible(tip)) ShowWindow(tip, SW_HIDE);
+
     // Brief delay so hide completes
-    Sleep(50);
+    Sleep(80);
 
     // Capture screen without cursor
     HDC hdcScreen = GetDC(nullptr);

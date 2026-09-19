@@ -7,8 +7,8 @@ using namespace Gdiplus;
 
 namespace {
 
-const int kW = 460;
-const int kH = 360;
+const int kW = 580;
+const int kH = 460;
 
 enum TextCtrlId {
     TXC_EDIT = 2001,
@@ -179,43 +179,43 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
 
     CreateWindowW(L"STATIC", L"文字内容：", WS_CHILD | WS_VISIBLE,
-                  16, 16, 100, 22, hwnd, nullptr, hi, nullptr);
+                  20, 16, 120, 24, hwnd, nullptr, hi, nullptr);
     HWND text = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
                                 existing ? existing->text.c_str() : L"",
                                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
-                                16, 40, kW - 50, 120, hwnd, Hm(TXC_EDIT), hi, nullptr);
+                                20, 44, kW - 60, 180, hwnd, Hm(TXC_EDIT), hi, nullptr);
 
     CreateWindowW(L"STATIC", L"字号", WS_CHILD | WS_VISIBLE,
-                  16, 180, 40, 22, hwnd, nullptr, hi, nullptr);
+                  20, 244, 48, 24, hwnd, nullptr, hi, nullptr);
     wchar_t szbuf[16];
     swprintf_s(szbuf, L"%d", existing ? static_cast<int>(existing->fontSize) : 20);
     CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", szbuf,
                     WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
-                    56, 176, 60, 26, hwnd, Hm(TXC_FONTSIZE), hi, nullptr);
+                    70, 240, 80, 30, hwnd, Hm(TXC_FONTSIZE), hi, nullptr);
 
     HWND bold = CreateWindowW(L"BUTTON", L"加粗 (Ctrl+B)",
                               WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                              140, 176, 120, 26, hwnd, Hm(TXC_BOLD), hi, nullptr);
+                              180, 240, 140, 30, hwnd, Hm(TXC_BOLD), hi, nullptr);
     if (existing && existing->bold) SendMessageW(bold, BM_SETCHECK, BST_CHECKED, 0);
 
     HWND trans = CreateWindowW(L"BUTTON", L"背景透明",
                                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                               280, 176, 100, 26, hwnd, Hm(TXC_TRANS), hi, nullptr);
+                              340, 240, 120, 30, hwnd, Hm(TXC_TRANS), hi, nullptr);
     bool transDefault = existing ? existing->transparentBg : true;
     SendMessageW(trans, BM_SETCHECK, transDefault ? BST_CHECKED : BST_UNCHECKED, 0);
 
     CreateWindowW(L"STATIC", L"颜色", WS_CHILD | WS_VISIBLE,
-                  16, 220, 40, 22, hwnd, nullptr, hi, nullptr);
+                  20, 294, 48, 24, hwnd, nullptr, hi, nullptr);
     st.colorBtn = CreateWindowW(L"BUTTON", L"",
                                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                56, 214, 48, 32, hwnd, Hm(TXC_COLOR), hi, nullptr);
+                                70, 288, 56, 36, hwnd, Hm(TXC_COLOR), hi, nullptr);
 
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                            kW - 200, 290, 80, 32, hwnd, Hm(TXC_OK), hi, nullptr);
+                            kW - 240, kH - 70, 100, 36, hwnd, Hm(TXC_OK), hi, nullptr);
     HWND cancel = CreateWindowW(L"BUTTON", L"取消",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                kW - 105, 290, 80, 32, hwnd, Hm(TXC_CANCEL), hi, nullptr);
+                                kW - 120, kH - 70, 100, 36, hwnd, Hm(TXC_CANCEL), hi, nullptr);
 
     for (HWND c = GetWindow(hwnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
         if (font) SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);

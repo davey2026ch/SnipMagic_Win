@@ -5,9 +5,9 @@ using namespace Gdiplus;
 
 namespace {
 
-const int kDlgW = 420;
-const int kDlgH = 560;
-const int kWheelSize = 180;
+const int kDlgW = 520;
+const int kDlgH = 700;
+const int kWheelSize = 200;
 
 struct PickState {
     HWND hwnd = nullptr;
@@ -57,14 +57,15 @@ enum {
 RECT WheelRect(HWND hwnd) {
     RECT rc; GetClientRect(hwnd, &rc);
     int x = (rc.right - kWheelSize) / 2;
-    return { x, 20, x + kWheelSize, 20 + kWheelSize };
+    return { x, 24, x + kWheelSize, 24 + kWheelSize };
 }
 
 RECT SliderRect(HWND hwnd, int idx) {
     RECT rc; GetClientRect(hwnd, &rc);
-    int left = 70, right = rc.right - 90;
-    int top = 220 + idx * 42;
-    return { left, top + 8, right, top + 30 };
+    int left = 90;
+    int right = rc.right - 100;
+    int top = 250 + idx * 46;
+    return { left, top + 6, right, top + 28 };
 }
 
 const wchar_t* kSliderNames[] = { L"明度", L"R", L"G", L"B", L"透明度" };
@@ -337,31 +338,29 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             DrawWheel(mem, wr, *st);
 
             FontFamily family(L"Microsoft YaHei");
-            Font font(&family, 12, FontStyleRegular, UnitPixel);
-            SolidBrush fg(Color(255, 30, 30, 30));
+            Font font(&family, 13, FontStyleRegular, UnitPixel);
+            SolidBrush fg(Color(255, 30, 30, 30)); // 纯文字，无背景
 
-            // color preview
-            int px = 20, py = 220;
-            // brightness is slider 0; preview current
+            // 右上角小色块预览（不遮挡左侧标签）
             SolidBrush pv(ToGpColor(st->Current(), static_cast<BYTE>(st->alpha)));
-            g.FillRectangle(&pv, px, py, 40, 220);
+            g.FillRectangle(&pv, rc.right - 48, 24, 28, 28);
             Pen pen(Color(255, 100, 100, 100), 1);
-            g.DrawRectangle(&pen, px, py, 40, 220);
+            g.DrawRectangle(&pen, rc.right - 48, 24, 28, 28);
 
+            // 左侧文字标签：无背景色，与滑杆同行
             for (int i = 0; i < 5; ++i) {
                 RECT sr = SliderRect(hwnd, i);
                 DrawSlider(mem, sr, i, *st);
                 g.DrawString(kSliderNames[i], -1, &font,
-                              PointF(static_cast<REAL>(sr.left - 48), static_cast<REAL>(sr.top)),
+                              PointF(16.0f, static_cast<REAL>(sr.top + 2)),
                               &fg);
             }
 
-            g.DrawString(L"HEX", -1, &font, PointF(20, 440), &fg);
-            // preview circle
+            g.DrawString(L"HEX", -1, &font, PointF(16.0f, 490.0f), &fg);
             SolidBrush pc(ToGpColor(st->Current(), static_cast<BYTE>(st->alpha)));
-            g.FillEllipse(&pc, rc.right - 70, 438, 36, 36);
+            g.FillEllipse(&pc, static_cast<REAL>(rc.right - 48), 490.0f, 28.0f, 28.0f);
             Pen ep(Color(255, 100, 100, 100), 1);
-            g.DrawEllipse(&ep, rc.right - 70, 438, 36, 36);
+            g.DrawEllipse(&ep, static_cast<REAL>(rc.right - 48), 490.0f, 28.0f, 28.0f);
         }
 
         BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
@@ -588,19 +587,20 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha) {
 
     HWND hex = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", st.hex.c_str(),
                                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                               70, 440, 180, 28, hwnd,
+                               90, 484, 200, 30, hwnd,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HEX)), hi, nullptr);
-    HWND eye = CreateWindowW(L"BUTTON", L"吸管",
+    // 吸管：HEX 下方单独一行
+    HWND eye = CreateWindowW(L"BUTTON", L"吸管（全屏取色）",
                              WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                             260, 440, 70, 28, hwnd,
+                             90, 530, 200, 34, hwnd,
                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_EYEDROP)), hi, nullptr);
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                            220, 490, 80, 32, hwnd,
+                            kDlgW - 230, kDlgH - 70, 90, 36, hwnd,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OK)), hi, nullptr);
     HWND cancel = CreateWindowW(L"BUTTON", L"取消",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                310, 490, 80, 32, hwnd,
+                                kDlgW - 120, kDlgH - 70, 90, 36, hwnd,
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CANCEL)), hi, nullptr);
 
     for (int i = 0; i < 5; ++i) {
@@ -609,7 +609,7 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha) {
         CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
                         std::to_wstring(vals[i]).c_str(),
                         WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
-                        sr.right + 4, sr.top - 2, 48, 24,
+                        sr.right + 8, sr.top - 2, 56, 28,
                         hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_EDIT_BASE + i)), hi, nullptr);
     }
 
