@@ -1,0 +1,626 @@
+#include "colorpicker.h"
+#include "settings.h"
+
+using namespace Gdiplus;
+
+namespace {
+
+const int kDlgW = 420;
+const int kDlgH = 560;
+const int kWheelSize = 180;
+
+struct PickState {
+    HWND hwnd = nullptr;
+    float h = 0, s = 1.0f, l = 0.5f;
+    int r = 255, g = 0, b = 0;
+    int alpha = 255;
+    std::wstring hex = L"#FF0000";
+    bool draggingWheel = false;
+    bool draggingSlider = false;
+    int sliderId = 0; // 0=brightness,1=R,2=G,3=B,4=A
+    bool updating = false;
+    ColorResult result;
+
+    void SyncFromHSL() {
+        COLORREF c = util::HSLtoRGB(h, s, l);
+        r = GetRValue(c); g = GetGValue(c); b = GetBValue(c);
+        hex = util::ToHex(RGB(r, g, b));
+    }
+    void SyncFromRGB() {
+        COLORREF c = RGB(r, g, b);
+        util::RGBtoHSL(c, h, s, l);
+        hex = util::ToHex(c);
+    }
+    void SyncFromHex() {
+        COLORREF c = util::ParseHex(hex);
+        r = GetRValue(c); g = GetGValue(c); b = GetBValue(c);
+        util::RGBtoHSL(c, h, s, l);
+    }
+    COLORREF Current() const { return RGB(r, g, b); }
+};
+
+// layout helpers
+enum {
+    IDC_WHEEL = 1001,
+    IDC_HEX = 1002,
+    IDC_EYEDROP = 1003,
+    IDC_OK = 1004,
+    IDC_CANCEL = 1005,
+    IDC_SLIDER_BASE = 1100, // 0..4
+    IDC_EDIT_BASE = 1200,   // 0..4
+};
+
+RECT WheelRect(HWND hwnd) {
+    RECT rc; GetClientRect(hwnd, &rc);
+    int x = (rc.right - kWheelSize) / 2;
+    return { x, 20, x + kWheelSize, 20 + kWheelSize };
+}
+
+RECT SliderRect(HWND hwnd, int idx) {
+    RECT rc; GetClientRect(hwnd, &rc);
+    int left = 70, right = rc.right - 90;
+    int top = 220 + idx * 42;
+    return { left, top + 8, right, top + 30 };
+}
+
+const wchar_t* kSliderNames[] = { L"明度", L"R", L"G", L"B", L"透明度" };
+
+void DrawWheel(HDC hdc, RECT rc, float h, float s, float l) {
+    Graphics g(hdc);
+    g.SetSmoothingMode(SmoothingModeHighQuality);
+    int cx = (rc.left + rc.right) / 2;
+    int cy = (rc.top + rc.bottom) / 2;
+    int R = (std::min)(rc.right - rc.left, rc.bottom - rc.top) / 2;
+
+    // paint hue wheel
+    for (int a = 0; a < 360; ++a) {
+        for (int rr = 0; rr < R; ++rr) {
+            float sat = static_cast<float>(rr) / static_cast<float>(R);
+            COLORREF c = util::HSLtoRGB(static_cast<float>(a), sat, l);
+            // approximate pie with small segments - use bitmap for speed
+        }
+    }
+    // Faster: draw to a bitmap once
+    Bitmap bmp(R * 2, R * 2, PixelFormat32bppARGB);
+    {
+        Graphics gb(&bmp);
+        for (int y = 0; y < R * 2; ++y) {
+            for (int x = 0; x < R * 2; ++x) {
+                int dx = x - R, dy = y - R;
+                int d2 = dx * dx + dy * dy;
+                if (d2 > R * R) continue;
+                float dist = std::sqrt(static_cast<float>(d2)) / R;
+                float ang = std::atan2(static_cast<float>(dy), static_cast<float>(dx)) * 180.0f / 3.14159265f;
+                if (ang < 0) ang += 360;
+                COLORREF c = util::HSLtoRGB(ang, dist, l);
+                SolidBrush br(ToGpColor(c));
+                gb.FillRectangle(&br, x, y, 1, 1);
+            }
+        }
+    }
+    g.DrawImage(&bmp, cx - R, cy - R);
+
+    // marker
+    float angRad = h * 3.14159265f / 180.0f;
+    float mx = cx + std::cos(angRad) * s * R;
+    float my = cy + std::sin(angRad) * s * R;
+    Pen w(Color(255, 255, 255, 255), 2);
+    Pen b(Color(255, 0, 0, 0), 1);
+    g.DrawEllipse(&w, static_cast<INT>(mx) - 6, static_cast<INT>(my) - 6, 12, 12);
+    g.DrawEllipse(&b, static_cast<INT>(mx) - 6, static_cast<INT>(my) - 6, 12, 12);
+}
+
+void DrawSlider(HDC hdc, RECT rc, int idx, const PickState& st) {
+    Graphics g(hdc);
+    g.SetSmoothingMode(SmoothingModeNone);
+    int w = rc.right - rc.left;
+    int h = rc.bottom - rc.top;
+    if (w < 4 || h < 4) return;
+
+    for (int x = 0; x < w; ++x) {
+        float t = static_cast<float>(x) / (std::max)(1, w - 1);
+        COLORREF c;
+        if (idx == 0) c = util::HSLtoRGB(st.h, st.s, t);
+        else if (idx == 1) c = RGB(static_cast<BYTE>(t * 255), st.g, st.b);
+        else if (idx == 2) c = RGB(st.r, static_cast<BYTE>(t * 255), st.b);
+        else if (idx == 3) c = RGB(st.r, st.g, static_cast<BYTE>(t * 255));
+        else c = RGB(st.r, st.g, st.b);
+        SolidBrush br(ToGpColor(c, idx == 4 ? static_cast<BYTE>(t * 255) : 255));
+        g.FillRectangle(&br, rc.left + x, rc.top, 1, h);
+    }
+    Pen pen(Color(255, 80, 80, 80), 1);
+    g.DrawRectangle(&pen, rc.left, rc.top, w - 1, h - 1);
+
+    int val = 0;
+    if (idx == 0) val = static_cast<int>(st.l * 255);
+    else if (idx == 1) val = st.r;
+    else if (idx == 2) val = st.g;
+    else if (idx == 3) val = st.b;
+    else val = st.alpha;
+    int hx = rc.left + static_cast<int>(val / 255.0f * (w - 8));
+    SolidBrush hb(Color(255, 255, 255, 255));
+    Pen hp(Color(255, 0, 0, 0), 1);
+    g.FillRectangle(&hb, hx, rc.top - 2, 8, h + 4);
+    g.DrawRectangle(&hp, hx, rc.top - 2, 8, h + 4);
+}
+
+int SliderFromX(HWND hwnd, int idx, int x) {
+    RECT rc = SliderRect(hwnd, idx);
+    int w = rc.right - rc.left;
+    float t = static_cast<float>(x - rc.left) / (std::max)(1, w - 1);
+    t = (std::max)(0.0f, (std::min)(1.0f, t));
+    return static_cast<int>(t * 255 + 0.5f);
+}
+
+void UpdateHexEdit(PickState* st) {
+    wchar_t buf[32];
+    swprintf_s(buf, L"%s", st->hex.c_str());
+    if (HWND h = GetDlgItem(st->hwnd, IDC_HEX))
+        SetWindowTextW(h, buf);
+}
+
+void UpdateValueEdits(PickState* st) {
+    int vals[5] = {
+        static_cast<int>(st->l * 255), st->r, st->g, st->b, st->alpha
+    };
+    for (int i = 0; i < 5; ++i) {
+        HWND h = GetDlgItem(st->hwnd, IDC_EDIT_BASE + i);
+        if (h) SetWindowTextW(h, std::to_wstring(vals[i]).c_str());
+    }
+}
+
+void RefreshAll(PickState* st) {
+    UpdateHexEdit(st);
+    UpdateValueEdits(st);
+    InvalidateRect(st->hwnd, nullptr, FALSE);
+}
+
+void OnWheelClick(PickState* st, int x, int y) {
+    RECT rc = WheelRect(st->hwnd);
+    int cx = (rc.left + rc.right) / 2;
+    int cy = (rc.top + rc.bottom) / 2;
+    int R = (std::min)(rc.right - rc.left, rc.bottom - rc.top) / 2;
+    float dx = static_cast<float>(x - cx);
+    float dy = static_cast<float>(y - cy);
+    float dist = std::sqrt(dx * dx + dy * dy) / (std::max)(1.0f, static_cast<float>(R));
+    float ang = std::atan2(dy, dx) * 180.0f / 3.14159265f;
+    if (ang < 0) ang += 360;
+    st->h = ang;
+    st->s = (std::max)(0.0f, (std::min)(1.0f, dist));
+    st->SyncFromHSL();
+    RefreshAll(st);
+}
+
+// ---- Eyedropper ----
+const wchar_t* kEyeClass = L"ScreenshotToolEyedropper";
+
+struct EyeState {
+    HWND hwnd = nullptr;
+    std::unique_ptr<Bitmap> frozen;
+    COLORREF picked = RGB(0, 0, 0);
+    bool done = false;
+    bool ok = false;
+    int mag = 10;
+};
+
+LRESULT CALLBACK EyeProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* st = reinterpret_cast<EyeState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+    case WM_NCCREATE: {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        st = static_cast<EyeState*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
+        st->hwnd = hwnd;
+        return TRUE;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        if (st && st->frozen) {
+            RECT rc; GetClientRect(hwnd, &rc);
+            Graphics g(hdc);
+            g.SetInterpolationMode(InterpolationModeNearestNeighbor);
+            g.DrawImage(st->frozen.get(), 0, 0, rc.right, rc.bottom);
+
+            POINT pt; GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            int magSize = 120;
+            int half = magSize / (2 * st->mag);
+            int sx = pt.x - half, sy = pt.y - half;
+            // draw magnifier
+            Rect dst(pt.x + 20, pt.y - magSize - 20, magSize, magSize);
+            if (dst.X + magSize > rc.right) dst.X = pt.x - magSize - 20;
+            if (dst.Y < 4) dst.Y = pt.y + 20;
+            g.DrawImage(st->frozen.get(), dst, sx, sy, half * 2, half * 2, UnitPixel);
+            Pen pen(Color(255, 0, 0, 0), 2);
+            g.DrawRectangle(&pen, dst);
+            // center cross
+            int ccx = dst.X + magSize / 2, ccy = dst.Y + magSize / 2;
+            int cell = magSize / (half * 2);
+            Pen cpen(Color(255, 255, 255, 255), 1);
+            g.DrawLine(&cpen, ccx - cell / 2 - 4, ccy, ccx + cell / 2 + 4, ccy);
+            g.DrawLine(&cpen, ccx, ccy - cell / 2 - 4, ccx, ccy + cell / 2 + 4);
+
+            // HEX tip
+            COLORREF c = st->picked;
+            wchar_t tip[64];
+            swprintf_s(tip, L"%s  RGB(%d,%d,%d)", util::ToHex(c).c_str(),
+                       GetRValue(c), GetGValue(c), GetBValue(c));
+            FontFamily family(L"Segoe UI");
+            Font font(&family, 12, FontStyleBold, UnitPixel);
+            RectF layout;
+            g.MeasureString(tip, -1, &font, PointF(0, 0), &layout);
+            float tx = static_cast<float>(dst.X);
+            float ty = static_cast<float>(dst.Y + magSize + 6);
+            SolidBrush bg(Color(220, 20, 20, 20));
+            g.FillRectangle(&bg, tx, ty, layout.Width + 12, layout.Height + 8);
+            SolidBrush fg(Color(255, 255, 255, 255));
+            g.DrawString(tip, -1, &font, PointF(tx + 6, ty + 4), &fg);
+
+            // preview swatch
+            SolidBrush sw(ToGpColor(c));
+            g.FillRectangle(&sw, dst.X + magSize - 24, dst.Y + magSize - 24, 20, 20);
+        }
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_MOUSEMOVE:
+        if (st) {
+            POINT pt; GetCursorPos(&pt);
+            st->picked = util::SampleScreenColor(pt);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return 0;
+    case WM_LBUTTONDOWN:
+        if (st) {
+            POINT pt; GetCursorPos(&pt);
+            st->picked = util::SampleScreenColor(pt);
+            st->ok = true;
+            st->done = true;
+            DestroyWindow(hwnd);
+        }
+        return 0;
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE && st) {
+            st->ok = false;
+            st->done = true;
+            DestroyWindow(hwnd);
+        }
+        return 0;
+    case WM_DESTROY:
+        if (st) st->done = true;
+        return 0;
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+}
+
+// ---- Color dialog ----
+const wchar_t* kPickClass = L"ScreenshotToolColorPicker";
+
+PickState* g_pick = nullptr;
+
+LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    PickState* st = reinterpret_cast<PickState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+    case WM_NCCREATE: {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        st = static_cast<PickState*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
+        st->hwnd = hwnd;
+        return TRUE;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc; GetClientRect(hwnd, &rc);
+        HDC mem = CreateCompatibleDC(hdc);
+        HBITMAP bm = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+        HGDIOBJ old = SelectObject(mem, bm);
+
+        Graphics g(mem);
+        SolidBrush bg(ToGpColor(RGB(250, 250, 250)));
+        g.FillRectangle(&bg, 0, 0, rc.right, rc.bottom);
+
+        if (st) {
+            RECT wr = WheelRect(hwnd);
+            DrawWheel(mem, wr, st->h, st->s, st->l);
+
+            FontFamily family(L"Microsoft YaHei");
+            Font font(&family, 12, FontStyleRegular, UnitPixel);
+            SolidBrush fg(Color(255, 30, 30, 30));
+
+            // color preview
+            int px = 20, py = 220;
+            // brightness is slider 0; preview current
+            SolidBrush pv(ToGpColor(st->Current(), static_cast<BYTE>(st->alpha)));
+            g.FillRectangle(&pv, px, py, 40, 220);
+            Pen pen(Color(255, 100, 100, 100), 1);
+            g.DrawRectangle(&pen, px, py, 40, 220);
+
+            for (int i = 0; i < 5; ++i) {
+                RECT sr = SliderRect(hwnd, i);
+                DrawSlider(mem, sr, i, *st);
+                g.DrawString(kSliderNames[i], -1, &font,
+                              PointF(static_cast<REAL>(sr.left - 48), static_cast<REAL>(sr.top)),
+                              &fg);
+            }
+
+            g.DrawString(L"HEX", -1, &font, PointF(20, 440), &fg);
+            // preview circle
+            SolidBrush pc(ToGpColor(st->Current(), static_cast<BYTE>(st->alpha)));
+            g.FillEllipse(&pc, rc.right - 70, 438, 36, 36);
+            Pen ep(Color(255, 100, 100, 100), 1);
+            g.DrawEllipse(&ep, rc.right - 70, 438, 36, 36);
+        }
+
+        BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, old);
+        DeleteObject(bm);
+        DeleteDC(mem);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_LBUTTONDOWN:
+    case WM_MOUSEMOVE: {
+        if (!st) return 0;
+        int x = GET_X_LPARAM(lParam), y = GET_Y_LPARAM(lParam);
+        if (msg == WM_LBUTTONDOWN) {
+            RECT wr = WheelRect(hwnd);
+            if (x >= wr.left && x <= wr.right && y >= wr.top && y <= wr.bottom) {
+                st->draggingWheel = true;
+                SetCapture(hwnd);
+                OnWheelClick(st, x, y);
+                return 0;
+            }
+            for (int i = 0; i < 5; ++i) {
+                RECT sr = SliderRect(hwnd, i);
+                if (x >= sr.left && x <= sr.right && y >= sr.top - 4 && y <= sr.bottom + 4) {
+                    st->draggingSlider = true;
+                    st->sliderId = i;
+                    SetCapture(hwnd);
+                    int v = SliderFromX(hwnd, i, x);
+                    if (i == 0) { st->l = v / 255.0f; st->SyncFromHSL(); }
+                    else if (i == 1) { st->r = v; st->SyncFromRGB(); }
+                    else if (i == 2) { st->g = v; st->SyncFromRGB(); }
+                    else if (i == 3) { st->b = v; st->SyncFromRGB(); }
+                    else st->alpha = v;
+                    RefreshAll(st);
+                    return 0;
+                }
+            }
+            return 0;
+        }
+        if (msg == WM_MOUSEMOVE) {
+            if (st->draggingWheel) { OnWheelClick(st, x, y); return 0; }
+            if (st->draggingSlider) {
+                int v = SliderFromX(hwnd, st->sliderId, x);
+                int i = st->sliderId;
+                if (i == 0) { st->l = v / 255.0f; st->SyncFromHSL(); }
+                else if (i == 1) { st->r = v; st->SyncFromRGB(); }
+                else if (i == 2) { st->g = v; st->SyncFromRGB(); }
+                else if (i == 3) { st->b = v; st->SyncFromRGB(); }
+                else st->alpha = v;
+                RefreshAll(st);
+            }
+        }
+        return 0;
+    }
+    case WM_LBUTTONUP:
+        if (st) {
+            st->draggingWheel = false;
+            st->draggingSlider = false;
+            ReleaseCapture();
+        }
+        return 0;
+    case WM_COMMAND: {
+        if (!st) return 0;
+        int id = LOWORD(wParam);
+        if (id == IDC_OK) {
+            wchar_t buf[64] = {};
+            GetWindowTextW(GetDlgItem(hwnd, IDC_HEX), buf, 64);
+            st->hex = buf;
+            st->SyncFromHex();
+            st->result.ok = true;
+            st->result.color = st->Current();
+            st->result.alpha = static_cast<BYTE>(st->alpha);
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (id == IDC_CANCEL) {
+            st->result.ok = false;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (id == IDC_EYEDROP) {
+            COLORREF c = st->Current();
+            if (ColorPicker::Eyedropper(hwnd, c)) {
+                st->r = GetRValue(c); st->g = GetGValue(c); st->b = GetBValue(c);
+                st->SyncFromRGB();
+                RefreshAll(st);
+            }
+            return 0;
+        }
+        // value edits on EN_CHANGE
+        if (HIWORD(wParam) == EN_CHANGE) {
+            for (int i = 0; i < 5; ++i) {
+                if (LOWORD(wParam) == IDC_EDIT_BASE + i && !st->updating) {
+                    wchar_t buf[32] = {};
+                    GetWindowTextW(GetDlgItem(hwnd, IDC_EDIT_BASE + i), buf, 32);
+                    int v = _wtoi(buf);
+                    v = (std::max)(0, (std::min)(255, v));
+                    if (i == 0) { st->l = v / 255.0f; st->SyncFromHSL(); }
+                    else if (i == 1) { st->r = v; st->SyncFromRGB(); }
+                    else if (i == 2) { st->g = v; st->SyncFromRGB(); }
+                    else if (i == 3) { st->b = v; st->SyncFromRGB(); }
+                    else st->alpha = v;
+                    st->updating = true;
+                    UpdateHexEdit(st);
+                    // update other edits lightly
+                    st->updating = false;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+        }
+        return 0;
+    }
+    case WM_CLOSE:
+        if (st) { st->result.ok = false; DestroyWindow(hwnd); }
+        return 0;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+}
+
+void EnsurePickClasses(HINSTANCE hi) {
+    static bool done = false;
+    if (done) return;
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.hInstance = hi;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = nullptr;
+
+    wc.lpfnWndProc = PickProc;
+    wc.lpszClassName = kPickClass;
+    RegisterClassExW(&wc);
+
+    wc.lpfnWndProc = EyeProc;
+    wc.lpszClassName = kEyeClass;
+    wc.hCursor = LoadCursor(nullptr, IDC_CROSS);
+    RegisterClassExW(&wc);
+    done = true;
+}
+
+} // namespace
+
+bool ColorPicker::Eyedropper(HWND owner, COLORREF& outColor) {
+    HINSTANCE hi = GetModuleHandleW(nullptr);
+    EnsurePickClasses(hi);
+
+    int x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    EyeState st;
+    {
+        HDC hdcScreen = GetDC(nullptr);
+        HDC hdcMem = CreateCompatibleDC(hdcScreen);
+        HBITMAP hbm = CreateCompatibleBitmap(hdcScreen, w, h);
+        HGDIOBJ old = SelectObject(hdcMem, hbm);
+        BitBlt(hdcMem, 0, 0, w, h, hdcScreen, x, y, SRCCOPY);
+        SelectObject(hdcMem, old);
+        DeleteDC(hdcMem);
+        ReleaseDC(nullptr, hdcScreen);
+        st.frozen = std::make_unique<Bitmap>(hbm, nullptr);
+        DeleteObject(hbm);
+    }
+
+    if (owner) ShowWindow(owner, SW_HIDE);
+    HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                                kEyeClass, L"",
+                                WS_POPUP | WS_VISIBLE,
+                                x, y, w, h,
+                                nullptr, nullptr, hi, &st);
+    if (hwnd) {
+        SetForegroundWindow(hwnd);
+        SetFocus(hwnd);
+        SetCapture(hwnd);
+        MSG msg;
+        while (!st.done && GetMessageW(&msg, nullptr, 0, 0)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        ReleaseCapture();
+    }
+    if (owner) {
+        ShowWindow(owner, SW_SHOW);
+        SetForegroundWindow(owner);
+    }
+    if (st.ok) outColor = st.picked;
+    return st.ok;
+}
+
+ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha) {
+    HINSTANCE hi = GetModuleHandleW(nullptr);
+    EnsurePickClasses(hi);
+
+    PickState st;
+    util::RGBtoHSL(initial, st.h, st.s, st.l);
+    st.r = GetRValue(initial);
+    st.g = GetGValue(initial);
+    st.b = GetBValue(initial);
+    st.alpha = initialAlpha;
+    st.hex = util::ToHex(initial);
+
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
+    int x = (sw - kDlgW) / 2;
+    int y = (sh - kDlgH) / 2;
+
+    HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+                                kPickClass, L"选择颜色",
+                                WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                                x, y, kDlgW, kDlgH,
+                                owner, nullptr, hi, &st);
+    if (!hwnd) return st.result;
+
+    HINSTANCE comctl = GetModuleHandleW(L"comctl32.dll");
+    // create child controls
+    HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
+
+    HWND hex = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", st.hex.c_str(),
+                               WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                               70, 440, 180, 28, hwnd,
+                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HEX)), hi, nullptr);
+    HWND eye = CreateWindowW(L"BUTTON", L"吸管",
+                             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                             260, 440, 70, 28, hwnd,
+                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_EYEDROP)), hi, nullptr);
+    HWND ok = CreateWindowW(L"BUTTON", L"确定",
+                            WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                            220, 490, 80, 32, hwnd,
+                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OK)), hi, nullptr);
+    HWND cancel = CreateWindowW(L"BUTTON", L"取消",
+                                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                310, 490, 80, 32, hwnd,
+                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CANCEL)), hi, nullptr);
+
+    for (int i = 0; i < 5; ++i) {
+        RECT sr = SliderRect(hwnd, i);
+        int vals[5] = { static_cast<int>(st.l * 255), st.r, st.g, st.b, st.alpha };
+        CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+                        std::to_wstring(vals[i]).c_str(),
+                        WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
+                        sr.right + 4, sr.top - 2, 48, 24,
+                        hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_EDIT_BASE + i)), hi, nullptr);
+    }
+
+    if (font) {
+        SendMessageW(hex, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SendMessageW(eye, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        for (int i = 0; i < 5; ++i)
+            SendMessageW(GetDlgItem(hwnd, IDC_EDIT_BASE + i), WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    }
+
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    SetForegroundWindow(hwnd);
+
+    MSG msg;
+    while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0)) {
+        if (!IsDialogMessageW(hwnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    if (font) DeleteObject(font);
+    return st.result;
+}
