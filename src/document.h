@@ -24,6 +24,27 @@ public:
     int scrollX = 0, scrollY = 0;
     int selectedIdx = -1;
 
+    // Rubber-band region selection (image coords) from Select tool
+    bool hasRegion = false;
+    float regionL = 0, regionT = 0, regionR = 0, regionB = 0;
+
+    void SetRegion(float x1, float y1, float x2, float y2) {
+        hasRegion = true;
+        regionL = (std::min)(x1, x2);
+        regionT = (std::min)(y1, y2);
+        regionR = (std::max)(x1, x2);
+        regionB = (std::max)(y1, y2);
+    }
+    void ClearRegion() { hasRegion = false; }
+    bool GetRegion(int& x, int& y, int& w, int& h) const {
+        if (!hasRegion) return false;
+        x = static_cast<int>(std::floor(regionL));
+        y = static_cast<int>(std::floor(regionT));
+        w = static_cast<int>(std::ceil(regionR - regionL));
+        h = static_cast<int>(std::ceil(regionB - regionT));
+        return w > 0 && h > 0;
+    }
+
     explicit Document(std::unique_ptr<Gdiplus::Bitmap> bmp, int documentId, std::wstring docName)
         : id(documentId), name(std::move(docName)), base(std::move(bmp)) {}
 

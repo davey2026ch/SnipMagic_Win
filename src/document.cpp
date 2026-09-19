@@ -103,19 +103,24 @@ void Document::DeleteSelected() {
 }
 
 bool Document::ApplyMosaic(int mosaicSize) {
-    if (!base || selectedIdx < 0) return false;
-    Annotation* sel = annotations[selectedIdx].get();
-    if (!sel) return false;
+    if (!base) return false;
 
-    RectF bounds;
-    sel->GetBounds(bounds);
-    int x = static_cast<int>(std::floor(bounds.X));
-    int y = static_cast<int>(std::floor(bounds.Y));
-    int w = static_cast<int>(std::ceil(bounds.Width));
-    int h = static_cast<int>(std::ceil(bounds.Height));
+    int x = 0, y = 0, w = 0, h = 0;
+    bool fromRegion = GetRegion(x, y, w, h);
+    if (!fromRegion) {
+        if (selectedIdx < 0) return false;
+        Annotation* sel = annotations[selectedIdx].get();
+        if (!sel) return false;
+        RectF bounds;
+        sel->GetBounds(bounds);
+        x = static_cast<int>(std::floor(bounds.X));
+        y = static_cast<int>(std::floor(bounds.Y));
+        w = static_cast<int>(std::ceil(bounds.Width));
+        h = static_cast<int>(std::ceil(bounds.Height));
+    }
+    if (w <= 0 || h <= 0) return false;
 
     PushUndo();
-    // Render current composite so mosaic covers existing annotations too
     auto composite = RenderComposite();
     if (!composite) return false;
     auto patch = util::PixelateBitmap(composite.get(), x, y, w, h, mosaicSize);
@@ -124,11 +129,19 @@ bool Document::ApplyMosaic(int mosaicSize) {
     auto img = std::make_unique<ImageAnn>();
     img->image = std::move(patch);
     img->rect = RectF(static_cast<REAL>(x), static_cast<REAL>(y),
-                      static_cast<REAL>(patch->GetWidth()), static_cast<REAL>(patch->GetHeight()));
+                      static_cast<REAL>(img->image->GetWidth()),
+                      static_cast<REAL>(img->image->GetHeight()));
     img->style.color = RGB(0, 0, 0);
 
-    // Replace selected object with mosaic patch (selection used as region)
-    annotations[selectedIdx] = std::move(img);
+    if (fromRegion) {
+        ClearSelection();
+        img->selected = true;
+        selectedIdx = static_cast<int>(annotations.size());
+        annotations.push_back(std::move(img));
+    } else {
+        annotations[selectedIdx] = std::move(img);
+    }
+    ClearRegion();
     return true;
 }
 
@@ -148,18 +161,22 @@ bool Document::CopySelectionToClipboard(Bitmap** outInternal) {
     if (outInternal) *outInternal = nullptr;
     if (!base) return false;
 
-    int x = 0, y = 0, w = Width(), h = Height();
-    Annotation* sel = GetSelected();
-    std::unique_ptr<Bitmap> cropSource;
-
-    if (sel) {
-        RectF b;
-        sel->GetBounds(b);
-        x = static_cast<int>(std::floor(b.X));
-        y = static_cast<int>(std::floor(b.Y));
-        w = static_cast<int>(std::ceil(b.Width));
-        h = static_cast<int>(std::ceil(b.Height));
+    int x = 0, y = 0, w = 0, h = 0;
+    if (!GetRegion(x, y, w, h)) {
+        Annotation* sel = GetSelected();
+        if (sel) {
+            RectF b;
+            sel->GetBounds(b);
+            x = static_cast<int>(std::floor(b.X));
+            y = static_cast<int>(std::floor(b.Y));
+            w = static_cast<int>(std::ceil(b.Width));
+            h = static_cast<int>(std::ceil(b.Height));
+        } else {
+            // fallback: whole image
+            x = 0; y = 0; w = Width(); h = Height();
+        }
     }
+    if (w <= 0 || h <= 0) return false;
 
     auto composite = RenderComposite();
     if (!composite) return false;

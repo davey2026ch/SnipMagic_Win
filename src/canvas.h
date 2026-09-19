@@ -82,7 +82,7 @@ private:
     bool IsEditMode() const;
     int Margin() const { return 16; }
 
-    enum class DragMode { None, Draw, Move, Resize };
+    enum class DragMode { None, Draw, Move, Resize, Rubber };
     enum class HandleId {
         None = -1,
         NW = 0, N = 1, NE = 2, E = 3, SE = 4, S = 5, SW = 6, W = 7

@@ -12,7 +12,23 @@ const wchar_t* kMainClass = L"ScreenshotToolMainWindow";
 const int kHotkeyId = 1;
 
 bool IsDark() { return Settings().IsDarkTheme(); }
+
+const wchar_t* kTipClass = L"ScreenshotToolTooltip";
+
+void EnsureTipClass(HINSTANCE hi) {
+    static bool reg = false;
+    if (reg) return;
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = hi;
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(static_cast<INT_PTR>(COLOR_INFOBK + 1));
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.lpszClassName = kTipClass;
+    RegisterClassExW(&wc);
+    reg = true;
 }
+} // namespace
 
 App& App::Instance() {
     static App app;
@@ -140,16 +156,17 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_MOUSEMOVE:
         OnMouseMove(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
+    case WM_MOUSELEAVE:
+        hoverLeft_ = -1;
+        hoverTop_ = -1;
+        HideTooltip();
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
     case WM_LBUTTONDBLCLK: {
         int x = GET_X_LPARAM(lParam), y = GET_Y_LPARAM(lParam);
-        // number button opens dropdown-like cycle dialog
         int idx = HitLeftButton(x, y);
         if (idx >= 0 && leftBtns_[idx].id == ID_TOOL_NUMBER) {
-            numberIndex_ = (numberIndex_ + 1) % 20;
-            Canvas::Instance().SetNumber(numberIndex_ + 1);
-            leftBtns_[idx].text = std::to_wstring(numberIndex_ + 1);
-            InvalidateRect(hwnd, nullptr, FALSE);
-            ShowStatusMessage(L"序号：" + std::to_wstring(numberIndex_ + 1));
+            ShowNumberMenu(leftBtns_[idx].rc.left, leftBtns_[idx].rc.bottom);
         }
         return 0;
     }
@@ -201,6 +218,8 @@ void App::BuildToolbars() {
         ToolButton b;
         b.id = id;
         b.text = text;
+        b.tip = text;
+        b.isLeft = false;
         topBtns_.push_back(b);
     };
     addTop(ID_CMD_CAPTURE, L"截图");
@@ -210,32 +229,237 @@ void App::BuildToolbars() {
     addTop(ID_CMD_UNDO, L"撤销");
     addTop(ID_CMD_REDO, L"重做");
 
-    struct L { int id; const wchar_t* text; Tool tool; bool toggle; };
+    struct L { int id; const wchar_t* tip; Tool tool; bool toggle; bool num; };
     const L left[] = {
-        { ID_TOOL_SELECT,   L"选择",  Tool::Select, true },
-        { ID_TOOL_BRUSH,    L"笔刷",  Tool::Brush, true },
-        { ID_TOOL_VIEW,     L"查看",  Tool::View, true },
-        { ID_TOOL_TEXT,     L"文字",  Tool::Text, true },
-        { ID_TOOL_ARROW,    L"箭头",  Tool::Arrow, true },
-        { ID_TOOL_LINE,     L"直线",  Tool::Line, true },
-        { ID_TOOL_PEN,      L"画笔",  Tool::Freehand, true },
-        { ID_TOOL_RECT,     L"矩形",  Tool::Rect, true },
-        { ID_TOOL_ROUND,    L"圆角框", Tool::RoundRect, true },
-        { ID_TOOL_ELLIPSE,  L"椭圆",  Tool::Ellipse, true },
-        { ID_TOOL_FRECT,    L"实心矩", Tool::FilledRect, true },
-        { ID_TOOL_FROUND,   L"实心角", Tool::FilledRoundRect, true },
-        { ID_TOOL_FELLIPSE, L"实心圆", Tool::FilledEllipse, true },
-        { ID_TOOL_NUMBER,   L"1",     Tool::Number, true },
-        { ID_CMD_COLOR,     L"颜色",  Tool::Select, false },
+        { ID_TOOL_SELECT,   L"选择（框选区域）", Tool::Select, true, false },
+        { ID_TOOL_BRUSH,    L"笔刷",            Tool::Brush, true, false },
+        { ID_TOOL_VIEW,     L"查看模式",         Tool::View, true, false },
+        { ID_TOOL_TEXT,     L"插入文字",         Tool::Text, true, false },
+        { ID_TOOL_ARROW,    L"箭头",            Tool::Arrow, true, false },
+        { ID_TOOL_LINE,     L"直线",            Tool::Line, true, false },
+        { ID_TOOL_PEN,      L"画笔",            Tool::Freehand, true, false },
+        { ID_TOOL_RECT,     L"矩形框",          Tool::Rect, true, false },
+        { ID_TOOL_ROUND,    L"圆角矩形框",       Tool::RoundRect, true, false },
+        { ID_TOOL_ELLIPSE,  L"椭圆",            Tool::Ellipse, true, false },
+        { ID_TOOL_FRECT,    L"实心矩形",         Tool::FilledRect, true, false },
+        { ID_TOOL_FROUND,   L"实心圆角矩形",     Tool::FilledRoundRect, true, false },
+        { ID_TOOL_FELLIPSE, L"实心椭圆",         Tool::FilledEllipse, true, false },
+        { ID_TOOL_NUMBER,   L"序号（点击选择 1-20）", Tool::Number, true, true },
+        { ID_CMD_COLOR,     L"颜色",            Tool::Select, false, false },
     };
     for (auto& item : left) {
         ToolButton b;
         b.id = item.id;
-        b.text = item.text;
+        b.tip = item.tip;
+        b.text = item.num ? std::to_wstring(numberIndex_ + 1) : item.tip;
         b.tool = item.tool;
         b.toggle = item.toggle;
+        b.isLeft = true;
+        b.showNumber = item.num;
         leftBtns_.push_back(b);
     }
+}
+
+void App::DrawToolIcon(Graphics& g, const ToolButton& b, const RECT& rc,
+                       COLORREF iconColor, COLORREF accent) const {
+    const REAL cx = (rc.left + rc.right) * 0.5f;
+    const REAL cy = (rc.top + rc.bottom) * 0.5f;
+    Color ink = ToGpColor(iconColor);
+    Color acc = ToGpColor(accent);
+    Pen pen(ink, 1.8f);
+    pen.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
+    Pen penThin(ink, 1.4f);
+    SolidBrush br(ink);
+    SolidBrush brAcc(acc);
+
+    switch (b.id) {
+    case ID_TOOL_SELECT: {
+        Pen dash(ink, 1.6f);
+        dash.SetDashStyle(DashStyleDash);
+        g.DrawRectangle(&dash, cx - 10.0f, cy - 10.0f, 20.0f, 20.0f);
+        g.DrawLine(&pen, cx + 2.0f, cy + 2.0f, cx + 9.0f, cy + 12.0f);
+        g.DrawLine(&pen, cx + 2.0f, cy + 2.0f, cx + 12.0f, cy + 4.0f);
+        g.DrawLine(&pen, cx + 4.0f, cy + 8.0f, cx + 9.0f, cy + 12.0f);
+        break;
+    }
+    case ID_TOOL_BRUSH: {
+        g.DrawLine(&pen, cx - 8.0f, cy + 8.0f, cx + 2.0f, cy - 2.0f);
+        g.FillEllipse(&br, cx + 2.0f, cy - 8.0f, 8.0f, 8.0f);
+        break;
+    }
+    case ID_TOOL_VIEW: {
+        g.DrawEllipse(&penThin, cx - 11.0f, cy - 7.0f, 22.0f, 14.0f);
+        g.FillEllipse(&br, cx - 4.0f, cy - 4.0f, 8.0f, 8.0f);
+        break;
+    }
+    case ID_TOOL_TEXT: {
+        FontFamily family(L"Segoe UI");
+        Font font(&family, 16.0f, FontStyleBold, UnitPixel);
+        SolidBrush tb(ink);
+        StringFormat fmt;
+        fmt.SetAlignment(StringAlignmentCenter);
+        fmt.SetLineAlignment(StringAlignmentCenter);
+        g.DrawString(L"T", 1, &font, RectF(cx - 12.0f, cy - 12.0f, 24.0f, 24.0f), &fmt, &tb);
+        break;
+    }
+    case ID_TOOL_ARROW: {
+        g.DrawLine(&pen, cx - 9.0f, cy + 7.0f, cx + 8.0f, cy - 7.0f);
+        PointF head[3] = {
+            PointF(cx + 9.0f, cy - 8.0f),
+            PointF(cx + 2.0f, cy - 6.0f),
+            PointF(cx + 6.0f, cy - 1.0f)
+        };
+        g.FillPolygon(&br, head, 3);
+        break;
+    }
+    case ID_TOOL_LINE: {
+        g.DrawLine(&pen, cx - 9.0f, cy + 8.0f, cx + 9.0f, cy - 8.0f);
+        break;
+    }
+    case ID_TOOL_PEN: {
+        g.DrawLine(&pen, cx - 9.0f, cy + 9.0f, cx + 5.0f, cy - 5.0f);
+        g.DrawLine(&penThin, cx + 4.0f, cy - 4.0f, cx + 9.0f, cy - 9.0f);
+        g.DrawLine(&penThin, cx + 5.0f, cy - 8.0f, cx + 8.0f, cy - 5.0f);
+        break;
+    }
+    case ID_TOOL_RECT: {
+        g.DrawRectangle(&pen, cx - 10.0f, cy - 8.0f, 20.0f, 16.0f);
+        break;
+    }
+    case ID_TOOL_ROUND: {
+        GraphicsPath path;
+        path.AddArc(cx - 10.0f, cy - 8.0f, 12.0f, 12.0f, 180.0f, 90.0f);
+        path.AddArc(cx + 2.0f, cy - 8.0f, 12.0f, 12.0f, 270.0f, 90.0f);
+        path.AddArc(cx + 2.0f, cy + 2.0f, 12.0f, 12.0f, 0.0f, 90.0f);
+        path.AddArc(cx - 10.0f, cy + 2.0f, 12.0f, 12.0f, 90.0f, 90.0f);
+        path.CloseFigure();
+        g.DrawPath(&pen, &path);
+        break;
+    }
+    case ID_TOOL_ELLIPSE: {
+        g.DrawEllipse(&pen, cx - 10.0f, cy - 8.0f, 20.0f, 16.0f);
+        break;
+    }
+    case ID_TOOL_FRECT: {
+        g.FillRectangle(&br, cx - 10.0f, cy - 8.0f, 20.0f, 16.0f);
+        break;
+    }
+    case ID_TOOL_FROUND: {
+        GraphicsPath path;
+        path.AddArc(cx - 10.0f, cy - 8.0f, 12.0f, 12.0f, 180.0f, 90.0f);
+        path.AddArc(cx + 2.0f, cy - 8.0f, 12.0f, 12.0f, 270.0f, 90.0f);
+        path.AddArc(cx + 2.0f, cy + 2.0f, 12.0f, 12.0f, 0.0f, 90.0f);
+        path.AddArc(cx - 10.0f, cy + 2.0f, 12.0f, 12.0f, 90.0f, 90.0f);
+        path.CloseFigure();
+        g.FillPath(&br, &path);
+        break;
+    }
+    case ID_TOOL_FELLIPSE: {
+        g.FillEllipse(&br, cx - 10.0f, cy - 8.0f, 20.0f, 16.0f);
+        break;
+    }
+    case ID_TOOL_NUMBER: {
+        g.DrawEllipse(&penThin, cx - 10.0f, cy - 10.0f, 20.0f, 20.0f);
+        FontFamily family(L"Segoe UI");
+        Font font(&family, 12.0f, FontStyleBold, UnitPixel);
+        SolidBrush tb(ink);
+        StringFormat fmt;
+        fmt.SetAlignment(StringAlignmentCenter);
+        fmt.SetLineAlignment(StringAlignmentCenter);
+        std::wstring n = std::to_wstring(numberIndex_ + 1);
+        g.DrawString(n.c_str(), -1, &font, RectF(cx - 12.0f, cy - 12.0f, 24.0f, 24.0f), &fmt, &tb);
+        break;
+    }
+    case ID_CMD_COLOR: {
+        COLORREF c = Canvas::Instance().GetDrawColor();
+        SolidBrush sw(ToGpColor(c));
+        g.FillRectangle(&sw, cx - 9.0f, cy - 9.0f, 18.0f, 18.0f);
+        g.DrawRectangle(&penThin, cx - 9.0f, cy - 9.0f, 18.0f, 18.0f);
+        g.DrawLine(&penThin, cx + 4.0f, cy + 4.0f, cx + 10.0f, cy - 4.0f);
+        break;
+    }
+    default: {
+        FontFamily family(L"Microsoft YaHei");
+        Font font(&family, 12.0f, FontStyleRegular, UnitPixel);
+        SolidBrush tb(ink);
+        StringFormat fmt;
+        fmt.SetAlignment(StringAlignmentCenter);
+        fmt.SetLineAlignment(StringAlignmentCenter);
+        g.DrawString(b.text.c_str(), -1, &font,
+                     RectF(static_cast<REAL>(rc.left), static_cast<REAL>(rc.top),
+                           static_cast<REAL>(rc.right - rc.left),
+                           static_cast<REAL>(rc.bottom - rc.top)),
+                     &fmt, &tb);
+        break;
+    }
+    }
+    (void)brAcc;
+}
+
+void App::ShowTooltip(int x, int y, const std::wstring& text) {
+    if (text.empty()) return;
+    HINSTANCE hi = hi_ ? hi_ : GetModuleHandleW(nullptr);
+    EnsureTipClass(hi);
+    if (!tipHwnd_) {
+        tipHwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_TRANSPARENT,
+                                    kTipClass, L"",
+                                    WS_POPUP | WS_BORDER,
+                                    0, 0, 10, 10,
+                                    hwnd_, nullptr, hi, nullptr);
+    }
+    if (!tipHwnd_) return;
+    tipText_ = text;
+    SetWindowTextW(tipHwnd_, text.c_str());
+
+    HDC hdc = GetDC(tipHwnd_);
+    HFONT font = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
+    HGDIOBJ old = SelectObject(hdc, font);
+    SIZE sz = {};
+    GetTextExtentPoint32W(hdc, text.c_str(), static_cast<int>(text.size()), &sz);
+    SelectObject(hdc, old);
+    DeleteObject(font);
+    ReleaseDC(tipHwnd_, hdc);
+
+    int w = sz.cx + 16;
+    int h = sz.cy + 12;
+    POINT pt = { x + 16, y + 8 };
+    ClientToScreen(hwnd_, &pt);
+    SetWindowPos(tipHwnd_, HWND_TOPMOST, pt.x, pt.y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(tipHwnd_, nullptr, TRUE);
+    // simple paint via WM_PAINT default - draw text ourselves
+    HDC tdc = GetDC(tipHwnd_);
+    RECT rc; GetClientRect(tipHwnd_, &rc);
+    FillRect(tdc, &rc, GetSysColorBrush(COLOR_INFOBK));
+    SetBkMode(tdc, TRANSPARENT);
+    SetTextColor(tdc, GetSysColor(COLOR_INFOTEXT));
+    HFONT f2 = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                           DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
+    HGDIOBJ o2 = SelectObject(tdc, f2);
+    DrawTextW(tdc, text.c_str(), -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(tdc, o2);
+    DeleteObject(f2);
+    ReleaseDC(tipHwnd_, tdc);
+}
+
+void App::HideTooltip() {
+    if (tipHwnd_) ShowWindow(tipHwnd_, SW_HIDE);
+}
+
+void App::ShowNumberMenu(int x, int y) {
+    HMENU menu = CreatePopupMenu();
+    for (int i = 1; i <= 20; ++i) {
+        wchar_t buf[16];
+        swprintf_s(buf, L"%d", i);
+        UINT flags = MF_STRING | (i == numberIndex_ + 1 ? MF_CHECKED : 0);
+        AppendMenuW(menu, flags, ID_NUM_BASE + i - 1, buf);
+    }
+    POINT pt = { x, y };
+    ClientToScreen(hwnd_, &pt);
+    SelectTool(Tool::Number);
+    TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+    DestroyMenu(menu);
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void App::LayoutChildren() {
@@ -346,33 +570,52 @@ void App::OnPaint() {
     SolidBrush textBr(ToGpColor(text));
     Pen borderPen(ToGpColor(border), 1);
 
-    auto drawBtn = [&](const ToolButton& b, bool active) {
-        Color fill = active ? ToGpColor(s.themeColor) : ToGpColor(IsDark() ? RGB(60, 60, 60) : RGB(240, 240, 240));
-        if (!active && s.IsDarkTheme()) fill = Color(255, 60, 60, 60);
-        SolidBrush br(fill);
-        g.FillRectangle(&br, b.rc.left, b.rc.top, b.rc.right - b.rc.left, b.rc.bottom - b.rc.top);
-        if (active) {
-            SolidBrush hi(ToGpColor(s.themeColor));
-            g.FillRectangle(&hi, b.rc.left, b.rc.top, b.rc.right - b.rc.left, 3);
+    auto drawBtn = [&](const ToolButton& b, bool active, bool hover, bool leftRail) {
+        int bw = b.rc.right - b.rc.left;
+        int bh = b.rc.bottom - b.rc.top;
+
+        if (leftRail) {
+            // Default: no filled background — only icon on panel
+            COLORREF iconColor = s.TextColor();
+            if (active) {
+                SolidBrush hi(ToGpColor(s.themeColor, 40));
+                g.FillRectangle(&hi, b.rc.left, b.rc.top, bw, bh);
+                Pen edge(ToGpColor(s.themeColor), 2);
+                g.DrawLine(&edge, b.rc.left + 1, b.rc.top + 4, b.rc.left + 1, b.rc.bottom - 4);
+                iconColor = s.themeColor;
+            } else if (hover) {
+                SolidBrush hi(ToGpColor(s.IsDarkTheme() ? RGB(70, 70, 70) : RGB(230, 230, 235)));
+                g.FillRectangle(&hi, b.rc.left, b.rc.top, bw, bh);
+            }
+            DrawToolIcon(g, b, b.rc, iconColor, s.themeColor);
+            return;
         }
-        Pen p(ToGpColor(s.IsDarkTheme() ? RGB(80, 80, 80) : RGB(200, 200, 200)), 1);
-        g.DrawRectangle(&p, b.rc.left, b.rc.top, b.rc.right - b.rc.left - 1, b.rc.bottom - b.rc.top - 1);
-        Color tc = active ? Color(255, 255, 255, 255) : ToGpColor(text);
+
+        // top bar buttons: keep text
+        Color fill = hover
+            ? ToGpColor(s.IsDarkTheme() ? RGB(70, 70, 70) : RGB(230, 230, 235))
+            : ToGpColor(s.IsDarkTheme() ? RGB(50, 50, 50) : RGB(245, 245, 245));
+        if (active) fill = ToGpColor(s.themeColor);
+        SolidBrush br(fill);
+        g.FillRectangle(&br, b.rc.left, b.rc.top, bw, bh);
+        Pen p(ToGpColor(s.BorderColor()), 1);
+        g.DrawRectangle(&p, b.rc.left, b.rc.top, bw - 1, bh - 1);
+        Color tc = active ? Color(255, 255, 255, 255) : ToGpColor(s.TextColor());
         SolidBrush tbr(tc);
         StringFormat fmt;
         fmt.SetAlignment(StringAlignmentCenter);
         fmt.SetLineAlignment(StringAlignmentCenter);
         RectF layout(static_cast<REAL>(b.rc.left), static_cast<REAL>(b.rc.top),
-                     static_cast<REAL>(b.rc.right - b.rc.left),
-                     static_cast<REAL>(b.rc.bottom - b.rc.top));
+                     static_cast<REAL>(bw), static_cast<REAL>(bh));
         g.DrawString(b.text.c_str(), -1, &font, layout, &fmt, &tbr);
     };
 
     Tool cur = Canvas::Instance().GetTool();
-    for (auto& b : topBtns_) drawBtn(b, false);
-    for (auto& b : leftBtns_) {
-        bool active = b.toggle && b.tool == cur;
-        drawBtn(b, active);
+    for (size_t i = 0; i < topBtns_.size(); ++i)
+        drawBtn(topBtns_[i], false, static_cast<int>(i) == hoverTop_, false);
+    for (size_t i = 0; i < leftBtns_.size(); ++i) {
+        bool active = leftBtns_[i].toggle && leftBtns_[i].tool == cur;
+        drawBtn(leftBtns_[i], active, static_cast<int>(i) == hoverLeft_, true);
     }
 
     // tab bar background
@@ -413,18 +656,26 @@ void App::OnPaint() {
 }
 
 void App::OnCommand(int id) {
+    // number selection menu
+    if (id >= ID_NUM_BASE && id < ID_NUM_BASE + 20) {
+        numberIndex_ = id - ID_NUM_BASE;
+        Canvas::Instance().SetNumber(numberIndex_ + 1);
+        for (auto& b : leftBtns_) {
+            if (b.id == ID_TOOL_NUMBER) b.text = std::to_wstring(numberIndex_ + 1);
+        }
+        SelectTool(Tool::Number);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        ShowStatusMessage(L"序号：" + std::to_wstring(numberIndex_ + 1));
+        return;
+    }
+
     if (id >= ID_TOOL_SELECT && id <= ID_TOOL_NUMBER) {
         for (auto& b : leftBtns_) {
             if (b.id == id) {
                 if (id == ID_TOOL_NUMBER) {
-                    // cycle number 1-20 on click
-                    numberIndex_ = (numberIndex_ + 1) % 20;
-                    Canvas::Instance().SetNumber(numberIndex_ + 1);
-                    for (auto& nb : leftBtns_) {
-                        if (nb.id == ID_TOOL_NUMBER)
-                            nb.text = std::to_wstring(numberIndex_ + 1);
-                    }
-                    ShowStatusMessage(L"序号：" + std::to_wstring(numberIndex_ + 1));
+                    // open 1-20 dropdown menu near the button
+                    ShowNumberMenu(b.rc.left, b.rc.bottom);
+                    return;
                 }
                 SelectTool(b.tool);
                 InvalidateRect(hwnd_, nullptr, FALSE);
@@ -642,10 +893,13 @@ void App::UpdateStatus() {
         float z = d->zoom * 100.0f;
         p2 = util::Format(L"页签 %s  ·  %d×%d  ·  缩放 %.0f%%",
                           d->name.c_str(), d->Width(), d->Height(), z);
-        if (d->GetSelected()) {
+        int rx, ry, rw, rh;
+        if (d->GetRegion(rx, ry, rw, rh)) {
+            p3 = util::Format(L"框选 %d×%d  ·  可马赛克/复制", rw, rh);
+        } else if (d->GetSelected()) {
             RectF b;
             d->GetSelected()->GetBounds(b);
-            p3 = util::Format(L"选区 %d×%d  ·  %s",
+            p3 = util::Format(L"选中 %d×%d  ·  %s",
                               static_cast<int>(b.Width), static_cast<int>(b.Height),
                               AnnTypeLabel(d->GetSelected()->type));
         } else if (hasHover_) {
@@ -740,7 +994,28 @@ void App::OnRButtonDown(int x, int y) {
 }
 
 void App::OnMouseMove(int x, int y) {
-    // color button hover preview color swatch - optional
+    TRACKMOUSEEVENT tme = {};
+    tme.cbSize = sizeof(tme);
+    tme.dwFlags = TME_LEAVE;
+    tme.hwndTrack = hwnd_;
+    TrackMouseEvent(&tme);
+
+    int oldLeft = hoverLeft_;
+    int oldTop = hoverTop_;
+    hoverLeft_ = HitLeftButton(x, y);
+    hoverTop_ = HitTopButton(x, y);
+
+    if (hoverLeft_ >= 0) {
+        ShowTooltip(x, y, leftBtns_[hoverLeft_].tip);
+    } else if (hoverTop_ >= 0) {
+        ShowTooltip(x, y, topBtns_[hoverTop_].tip);
+    } else {
+        HideTooltip();
+    }
+
+    if (oldLeft != hoverLeft_ || oldTop != hoverTop_) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
 }
 
 void App::CreateTabMenu(int tabIdx, int x, int y) {

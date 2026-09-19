@@ -3,13 +3,19 @@
 #include "document.h"
 #include "canvas.h"
 
+// forward
+namespace Gdiplus { class Graphics; }
+
 // Top / left toolbar button definition
 struct ToolButton {
     int id = 0;
-    std::wstring text;
+    std::wstring text;      // tooltip / fallback text
+    std::wstring tip;       // hover tooltip
     RECT rc {};
     bool toggle = false;
-    Tool tool = Tool::Select; // for left tools
+    bool isLeft = false;    // left rail: icon-style
+    bool showNumber = false;// number tool shows current value
+    Tool tool = Tool::Select;
 };
 
 class App {
@@ -76,7 +82,17 @@ private:
     std::vector<ToolButton> topBtns_;
     std::vector<ToolButton> leftBtns_;
     int numberIndex_ = 0; // 0-based; display 1..20
-    bool numberComboOpen_ = false;
+    int hoverLeft_ = -1;
+    int hoverTop_ = -1;
+    HWND tipHwnd_ = nullptr;
+    std::wstring tipText_;
+    bool tracking_ = false;
+
+    void ShowTooltip(int x, int y, const std::wstring& text);
+    void HideTooltip();
+    void ShowNumberMenu(int x, int y);
+    void DrawToolIcon(Graphics& g, const ToolButton& b, const RECT& rc,
+                      COLORREF iconColor, COLORREF accent) const;
 
     std::wstring statusMsg_;
     std::wstring hoverInfo_;
@@ -120,6 +136,8 @@ enum : int {
     ID_TOOL_FROUND = 211,
     ID_TOOL_FELLIPSE = 212,
     ID_TOOL_NUMBER = 213,
+
+    ID_NUM_BASE = 600, // 600..619 => number 1..20
 
     ID_TAB_BASE = 400,
     ID_MENU_CLOSE = 501,

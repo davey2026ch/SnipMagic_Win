@@ -17,9 +17,13 @@ struct PickState {
     std::wstring hex = L"#FF0000";
     bool draggingWheel = false;
     bool draggingSlider = false;
-    int sliderId = 0; // 0=brightness,1=R,2=G,3=B,4=A
+    int sliderId = 0;
     bool updating = false;
+    bool done = false;
     ColorResult result;
+    // cached wheel bitmap keyed by lightness
+    std::unique_ptr<Bitmap> wheelCache;
+    float wheelCacheL = -1.0f;
 
     void SyncFromHSL() {
         COLORREF c = util::HSLtoRGB(h, s, l);
@@ -65,45 +69,51 @@ RECT SliderRect(HWND hwnd, int idx) {
 
 const wchar_t* kSliderNames[] = { L"明度", L"R", L"G", L"B", L"透明度" };
 
-void DrawWheel(HDC hdc, RECT rc, float h, float s, float l) {
+void DrawWheel(HDC hdc, RECT rc, PickState& st) {
     Graphics g(hdc);
     g.SetSmoothingMode(SmoothingModeHighQuality);
     int cx = (rc.left + rc.right) / 2;
     int cy = (rc.top + rc.bottom) / 2;
     int R = (std::min)(rc.right - rc.left, rc.bottom - rc.top) / 2;
+    if (R < 4) return;
 
-    // paint hue wheel
-    for (int a = 0; a < 360; ++a) {
-        for (int rr = 0; rr < R; ++rr) {
-            float sat = static_cast<float>(rr) / static_cast<float>(R);
-            COLORREF c = util::HSLtoRGB(static_cast<float>(a), sat, l);
-            // approximate pie with small segments - use bitmap for speed
-        }
-    }
-    // Faster: draw to a bitmap once
-    Bitmap bmp(R * 2, R * 2, PixelFormat32bppARGB);
-    {
-        Graphics gb(&bmp);
-        for (int y = 0; y < R * 2; ++y) {
-            for (int x = 0; x < R * 2; ++x) {
-                int dx = x - R, dy = y - R;
-                int d2 = dx * dx + dy * dy;
-                if (d2 > R * R) continue;
-                float dist = std::sqrt(static_cast<float>(d2)) / R;
-                float ang = std::atan2(static_cast<float>(dy), static_cast<float>(dx)) * 180.0f / 3.14159265f;
-                if (ang < 0) ang += 360;
-                COLORREF c = util::HSLtoRGB(ang, dist, l);
-                SolidBrush br(ToGpColor(c));
-                gb.FillRectangle(&br, x, y, 1, 1);
+    // Rebuild cache only when lightness changes
+    if (!st.wheelCache || std::fabs(st.wheelCacheL - st.l) > 0.002f) {
+        st.wheelCache = std::make_unique<Bitmap>(R * 2, R * 2, PixelFormat32bppARGB);
+        BitmapData data;
+        Rect lockRc(0, 0, R * 2, R * 2);
+        if (st.wheelCache->LockBits(&lockRc, ImageLockModeWrite, PixelFormat32bppARGB, &data) == Ok) {
+            auto* pixels = static_cast<BYTE*>(data.Scan0);
+            for (int y = 0; y < R * 2; ++y) {
+                auto* row = pixels + y * data.Stride;
+                for (int x = 0; x < R * 2; ++x) {
+                    int dx = x - R, dy = y - R;
+                    int d2 = dx * dx + dy * dy;
+                    BYTE* p = row + x * 4;
+                    if (d2 > R * R) {
+                        p[0] = p[1] = p[2] = p[3] = 0;
+                        continue;
+                    }
+                    float dist = std::sqrt(static_cast<float>(d2)) / R;
+                    float ang = std::atan2(static_cast<float>(dy), static_cast<float>(dx)) * 180.0f / 3.14159265f;
+                    if (ang < 0) ang += 360;
+                    COLORREF c = util::HSLtoRGB(ang, dist, st.l);
+                    p[0] = GetBValue(c);
+                    p[1] = GetGValue(c);
+                    p[2] = GetRValue(c);
+                    p[3] = 255;
+                }
             }
+            st.wheelCache->UnlockBits(&data);
         }
+        st.wheelCacheL = st.l;
     }
-    g.DrawImage(&bmp, cx - R, cy - R);
 
-    // marker
-    float angRad = h * 3.14159265f / 180.0f;
-    float mx = cx + std::cos(angRad) * s * R;
-    float my = cy + std::sin(angRad) * s * R;
+    g.DrawImage(st.wheelCache.get(), cx - R, cy - R);
+
+    float angRad = st.h * 3.14159265f / 180.0f;
+    float mx = cx + std::cos(angRad) * st.s * R;
+    float my = cy + std::sin(angRad) * st.s * R;
     Pen w(Color(255, 255, 255, 255), 2);
     Pen b(Color(255, 0, 0, 0), 1);
     g.DrawEllipse(&w, static_cast<INT>(mx) - 6, static_cast<INT>(my) - 6, 12, 12);
@@ -324,7 +334,7 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         if (st) {
             RECT wr = WheelRect(hwnd);
-            DrawWheel(mem, wr, st->h, st->s, st->l);
+            DrawWheel(mem, wr, *st);
 
             FontFamily family(L"Microsoft YaHei");
             Font font(&family, 12, FontStyleRegular, UnitPixel);
@@ -424,11 +434,13 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             st->result.ok = true;
             st->result.color = st->Current();
             st->result.alpha = static_cast<BYTE>(st->alpha);
+            st->done = true;
             DestroyWindow(hwnd);
             return 0;
         }
         if (id == IDC_CANCEL) {
             st->result.ok = false;
+            st->done = true;
             DestroyWindow(hwnd);
             return 0;
         }
@@ -465,10 +477,10 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_CLOSE:
-        if (st) { st->result.ok = false; DestroyWindow(hwnd); }
+        if (st) { st->result.ok = false; st->done = true; DestroyWindow(hwnd); }
         return 0;
     case WM_DESTROY:
-        PostQuitMessage(0);
+        if (st) st->done = true;
         return 0;
     default:
         return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -615,7 +627,9 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha) {
     SetForegroundWindow(hwnd);
 
     MSG msg;
-    while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0)) {
+    while (!st.done) {
+        BOOL r = GetMessageW(&msg, nullptr, 0, 0);
+        if (r == 0 || r == -1) break;
         if (!IsDialogMessageW(hwnd, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);

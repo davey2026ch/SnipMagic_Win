@@ -51,9 +51,12 @@ bool Canvas::Create(HWND parent, HINSTANCE hi) {
     hwnd_ = CreateWindowExW(
         WS_EX_CLIENTEDGE,
         kCanvasClass, L"",
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | WS_CLIPCHILDREN,
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
         0, 0, 100, 100,
-        parent, reinterpret_cast<HMENU>(1), hi, this);
+        parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(1)), hi, this);
+    if (hwnd_) {
+        ShowScrollBar(hwnd_, SB_BOTH, FALSE);
+    }
     return hwnd_ != nullptr;
 }
 
@@ -185,7 +188,22 @@ void Canvas::Refresh() {
 }
 
 void Canvas::UpdateScrollBars() {
-    if (!hwnd_ || !doc_) return;
+    if (!hwnd_) return;
+
+    auto hideBar = [&](int bar) {
+        ShowScrollBar(hwnd_, bar, FALSE);
+        SCROLLINFO si = { sizeof(si) };
+        si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+        si.nMin = 0; si.nMax = 0; si.nPos = 0; si.nPage = 0;
+        SetScrollInfo(hwnd_, bar, &si, TRUE);
+    };
+
+    if (!doc_ || !doc_->base) {
+        hideBar(SB_HORZ);
+        hideBar(SB_VERT);
+        return;
+    }
+
     RECT rc;
     GetClientRect(hwnd_, &rc);
     float z = doc_->zoom;
@@ -193,22 +211,37 @@ void Canvas::UpdateScrollBars() {
     int contentW = static_cast<int>(doc_->Width() * z) + m * 2;
     int contentH = static_cast<int>(doc_->Height() * z) + m * 2;
 
-    SCROLLINFO si = { sizeof(si) };
-    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
-    si.nMin = 0;
-    si.nMax = (std::max)(0, contentW - 1);
-    si.nPage = static_cast<UINT>(rc.right);
-    si.nPos = doc_->scrollX;
-    SetScrollInfo(hwnd_, SB_HORZ, &si, TRUE);
-    GetScrollInfo(hwnd_, SB_HORZ, &si);
-    doc_->scrollX = si.nPos;
+    if (contentW <= rc.right) {
+        doc_->scrollX = 0;
+        hideBar(SB_HORZ);
+    } else {
+        SCROLLINFO si = { sizeof(si) };
+        si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
+        si.nMin = 0;
+        si.nMax = contentW - 1;
+        si.nPage = static_cast<UINT>(rc.right);
+        si.nPos = doc_->scrollX;
+        ShowScrollBar(hwnd_, SB_HORZ, TRUE);
+        SetScrollInfo(hwnd_, SB_HORZ, &si, TRUE);
+        GetScrollInfo(hwnd_, SB_HORZ, &si);
+        doc_->scrollX = si.nPos;
+    }
 
-    si.nMax = (std::max)(0, contentH - 1);
-    si.nPage = static_cast<UINT>(rc.bottom);
-    si.nPos = doc_->scrollY;
-    SetScrollInfo(hwnd_, SB_VERT, &si, TRUE);
-    GetScrollInfo(hwnd_, SB_VERT, &si);
-    doc_->scrollY = si.nPos;
+    if (contentH <= rc.bottom) {
+        doc_->scrollY = 0;
+        hideBar(SB_VERT);
+    } else {
+        SCROLLINFO si = { sizeof(si) };
+        si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
+        si.nMin = 0;
+        si.nMax = contentH - 1;
+        si.nPage = static_cast<UINT>(rc.bottom);
+        si.nPos = doc_->scrollY;
+        ShowScrollBar(hwnd_, SB_VERT, TRUE);
+        SetScrollInfo(hwnd_, SB_VERT, &si, TRUE);
+        GetScrollInfo(hwnd_, SB_VERT, &si);
+        doc_->scrollY = si.nPos;
+    }
 }
 
 void Canvas::ClientToImage(int cx, int cy, float& ix, float& iy) const {
@@ -281,10 +314,58 @@ void Canvas::OnPaint() {
     GraphicsState st = g.Save();
     g.TranslateTransform(static_cast<REAL>(ix), static_cast<REAL>(iy));
     g.ScaleTransform(z, z);
-    // draft
     if (draft_) draft_->Draw(g);
     doc_->DrawAnnotations(g, false);
+
+    // rubber-band or stored region
+    if (dragMode_ == DragMode::Rubber || doc_->hasRegion) {
+        float l, t, r, b;
+        if (dragMode_ == DragMode::Rubber) {
+            l = (std::min)(startIx_, lastIx_);
+            t = (std::min)(startIy_, lastIy_);
+            r = (std::max)(startIx_, lastIx_);
+            b = (std::max)(startIy_, lastIy_);
+        } else {
+            l = doc_->regionL; t = doc_->regionT;
+            r = doc_->regionR; b = doc_->regionB;
+        }
+        RectF region(l, t, r - l, b - t);
+        Pen pen(Color(220, 0, 120, 215), 1.5f / (std::max)(0.01f, z));
+        pen.SetDashStyle(DashStyleDash);
+        g.DrawRectangle(&pen, region);
+        // corner ticks
+        float tick = 6.0f / z;
+        Pen tickPen(Color(255, 0, 120, 215), 2.0f / z);
+        g.DrawLine(&tickPen, l, t, l + tick, t);
+        g.DrawLine(&tickPen, l, t, l, t + tick);
+        g.DrawLine(&tickPen, r, t, r - tick, t);
+        g.DrawLine(&tickPen, r, t, r, t + tick);
+        g.DrawLine(&tickPen, l, b, l + tick, b);
+        g.DrawLine(&tickPen, l, b, l, b - tick);
+        g.DrawLine(&tickPen, r, b, r - tick, b);
+        g.DrawLine(&tickPen, r, b, r, b - tick);
+    }
     g.Restore(st);
+
+    // size tip near rubber band
+    if (dragMode_ == DragMode::Rubber) {
+        int sw = static_cast<int>(std::fabs(lastIx_ - startIx_));
+        int sh = static_cast<int>(std::fabs(lastIy_ - startIy_));
+        if (sw > 2 || sh > 2) {
+            wchar_t tip[64];
+            swprintf_s(tip, L"%d × %d", sw, sh);
+            FontFamily family(L"Segoe UI");
+            Font font(&family, 12, FontStyleBold, UnitPixel);
+            int tx, ty;
+            ImageToClient((std::max)(startIx_, lastIx_), (std::min)(startIy_, lastIy_), tx, ty);
+            ty -= 28;
+            if (ty < 4) ty = 4;
+            SolidBrush bg(Color(200, 20, 20, 20));
+            SolidBrush fg(Color(255, 255, 255, 255));
+            g.FillRectangle(&bg, tx, ty, 80, 22);
+            g.DrawString(tip, -1, &font, PointF(static_cast<REAL>(tx + 6), static_cast<REAL>(ty + 2)), &fg);
+        }
+    }
 
     BitBlt(hdc, 0, 0, w, h, memDc_, 0, 0, SRCCOPY);
     EndPaint(hwnd_, &ps);
@@ -354,9 +435,9 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
     startIy_ = lastIy_ = iy;
 
     if (right) {
-        // context: cancel draft / deselect
         draft_.reset();
         doc_->ClearSelection();
+        doc_->ClearRegion();
         dragMode_ = DragMode::None;
         Refresh();
         return;
@@ -377,8 +458,9 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
             }
         }
         int hit = doc_->HitTest(ix, iy);
-        doc_->ClearSelection();
         if (hit >= 0) {
+            doc_->ClearSelection();
+            doc_->ClearRegion();
             doc_->selectedIdx = hit;
             doc_->annotations[hit]->selected = true;
             dragMode_ = DragMode::Move;
@@ -387,7 +469,10 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
             moveBackup_ = doc_->annotations[hit]->Clone();
             doc_->PushUndo();
         } else {
-            dragMode_ = DragMode::None;
+            // rubber-band region selection
+            doc_->ClearSelection();
+            doc_->ClearRegion();
+            dragMode_ = DragMode::Rubber;
         }
         Refresh();
         App::Instance().UpdateStatus();
@@ -510,6 +595,13 @@ void Canvas::OnMouseMove(int x, int y) {
         return;
     }
 
+    if (dragMode_ == DragMode::Rubber) {
+        lastIx_ = ix;
+        lastIy_ = iy;
+        Refresh();
+        return;
+    }
+
     if (dragMode_ == DragMode::Resize) {
         Annotation* sel = doc_->GetSelected();
         if (sel) ResizeSelected(activeHandle_, ix, iy);
@@ -556,6 +648,23 @@ void Canvas::OnMouseUp(int x, int y) {
         Refresh();
         return;
     }
+
+    if (dragMode_ == DragMode::Rubber && doc_) {
+        float sw = std::fabs(ix - startIx_);
+        float sh = std::fabs(iy - startIy_);
+        if (sw >= 2 && sh >= 2) {
+            doc_->SetRegion(startIx_, startIy_, ix, iy);
+            App::Instance().ShowStatusMessage(
+                util::Format(L"已框选区域 %d×%d，可马赛克 / Ctrl+C 复制",
+                             static_cast<int>(sw), static_cast<int>(sh)));
+        } else {
+            doc_->ClearRegion();
+        }
+        dragMode_ = DragMode::None;
+        Refresh();
+        App::Instance().UpdateStatus();
+        return;
+    }
     dragMode_ = DragMode::None;
 }
 
@@ -595,6 +704,7 @@ void Canvas::OnKeyDown(WPARAM vk) {
     } else if (vk == VK_ESCAPE) {
         draft_.reset();
         doc_->ClearSelection();
+        doc_->ClearRegion();
         dragMode_ = DragMode::None;
         Refresh();
     }
@@ -698,7 +808,7 @@ void Canvas::PasteFromBuffer() {
 
 void Canvas::ApplyMosaicToSelection() {
     if (!doc_) return;
-    if (doc_->selectedIdx < 0) {
+    if (!doc_->hasRegion && doc_->selectedIdx < 0) {
         App::Instance().ShowStatusMessage(L"请先用「选择」框选要打码的区域");
         return;
     }

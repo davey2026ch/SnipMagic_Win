@@ -24,6 +24,7 @@ enum {
 struct SetDlgState {
     HWND hwnd = nullptr;
     bool ok = false;
+    bool done = false;
     COLORREF themeColor = RGB(0, 0x78, 0xD4);
     HWND colorBtn = nullptr;
     AppSettings draft;
@@ -32,25 +33,25 @@ struct SetDlgState {
 const wchar_t* kClass = L"ScreenshotToolSettingsDlg";
 
 void PaintColorBtn(HWND hwnd, SetDlgState* st) {
-    if (!st->colorBtn) return;
-    HDC hdc = GetDC(hwnd);
+    if (!st || !st->colorBtn) return;
+    HDC hdc = GetDC(st->colorBtn);
     if (!hdc) return;
     RECT rc; GetClientRect(st->colorBtn, &rc);
     HDC mem = CreateCompatibleDC(hdc);
     HBITMAP bm = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
     HGDIOBJ old = SelectObject(mem, bm);
-    Graphics g(mem);
-    SolidBrush br(ToGpColor(st->themeColor));
-    g.FillRectangle(&br, 0, 0, rc.right, rc.bottom);
-    Pen pen(Color(255, 80, 80, 80), 1);
-    g.DrawRectangle(&pen, 0, 0, rc.right - 1, rc.bottom - 1);
-    HDC btnDc = GetDC(st->colorBtn);
-    BitBlt(btnDc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
-    ReleaseDC(st->colorBtn, btnDc);
+    {
+        Graphics g(mem);
+        SolidBrush br(ToGpColor(st->themeColor));
+        g.FillRectangle(&br, 0, 0, rc.right, rc.bottom);
+        Pen pen(Color(255, 80, 80, 80), 1);
+        g.DrawRectangle(&pen, 0, 0, rc.right - 1, rc.bottom - 1);
+    }
+    BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
     SelectObject(mem, old);
     DeleteObject(bm);
     DeleteDC(mem);
-    ReleaseDC(hwnd, hdc);
+    ReleaseDC(st->colorBtn, hdc);
 }
 
 LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -97,24 +98,41 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (st->draft.brushThickness < 1) st->draft.brushThickness = 1;
             st->draft.themeColor = st->themeColor;
             st->ok = true;
+            st->done = true;
             DestroyWindow(hwnd);
             return 0;
         }
         if (id == IDC_CANCEL) {
             st->ok = false;
+            st->done = true;
             DestroyWindow(hwnd);
             return 0;
         }
         return 0;
     }
-    case WM_PAINT:
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        BeginPaint(hwnd, &ps);
         if (st) PaintColorBtn(hwnd, st);
+        EndPaint(hwnd, &ps);
         return 0;
+    }
+    case WM_DRAWITEM: {
+        auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+        if (st && dis && dis->CtlID == IDC_THEMECOLOR) {
+            Graphics g(dis->hDC);
+            SolidBrush br(ToGpColor(st->themeColor));
+            g.FillRectangle(&br, 0, 0, dis->rcItem.right - dis->rcItem.left,
+                            dis->rcItem.bottom - dis->rcItem.top);
+            return TRUE;
+        }
+        return 0;
+    }
     case WM_CLOSE:
-        if (st) { st->ok = false; DestroyWindow(hwnd); }
+        if (st) { st->ok = false; st->done = true; DestroyWindow(hwnd); }
         return 0;
     case WM_DESTROY:
-        PostQuitMessage(0);
+        if (st) st->done = true;
         return 0;
     default:
         return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -235,7 +253,9 @@ bool SettingsDialog::Show(HWND owner) {
     SetForegroundWindow(hwnd);
 
     MSG msg;
-    while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0)) {
+    while (!st.done) {
+        BOOL r = GetMessageW(&msg, nullptr, 0, 0);
+        if (r == 0 || r == -1) break;
         if (!IsDialogMessageW(hwnd, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);

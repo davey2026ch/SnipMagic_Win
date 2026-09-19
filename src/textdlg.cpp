@@ -26,6 +26,7 @@ struct TextDlgState {
     COLORREF color = RGB(255, 0, 0);
     BYTE alpha = 255;
     HWND colorBtn = nullptr;
+    bool done = false;
 };
 
 const wchar_t* kTextClass = L"ScreenshotToolTextDlg";
@@ -96,24 +97,45 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             st->result.transparentBg = SendMessageW(GetDlgItem(hwnd, TXC_TRANS), BM_GETCHECK, 0, 0) == BST_CHECKED;
             st->result.color = st->color;
             st->result.alpha = st->alpha;
+            st->done = true;
             DestroyWindow(hwnd);
             return 0;
         }
         if (id == TXC_CANCEL) {
             st->result.ok = false;
+            st->done = true;
             DestroyWindow(hwnd);
             return 0;
         }
         return 0;
     }
-    case WM_PAINT:
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        BeginPaint(hwnd, &ps);
         if (st) PaintColorBtn(hwnd, st);
+        EndPaint(hwnd, &ps);
         return 0;
+    }
+    case WM_DRAWITEM: {
+        auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+        if (st && dis && dis->CtlID == TXC_COLOR) {
+            Graphics g(dis->hDC);
+            SolidBrush br(ToGpColor(st->color, st->alpha));
+            g.FillRectangle(&br, 0, 0, dis->rcItem.right - dis->rcItem.left,
+                            dis->rcItem.bottom - dis->rcItem.top);
+            Pen pen(Color(255, 80, 80, 80), 1);
+            g.DrawRectangle(&pen, 0, 0,
+                            dis->rcItem.right - dis->rcItem.left - 1,
+                            dis->rcItem.bottom - dis->rcItem.top - 1);
+            return TRUE;
+        }
+        return 0;
+    }
     case WM_CLOSE:
-        if (st) { st->result.ok = false; DestroyWindow(hwnd); }
+        if (st) { st->result.ok = false; st->done = true; DestroyWindow(hwnd); }
         return 0;
     case WM_DESTROY:
-        PostQuitMessage(0);
+        if (st) st->done = true;
         return 0;
     default:
         return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -207,7 +229,9 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
     SetFocus(text);
 
     MSG msg;
-    while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0)) {
+    while (!st.done) {
+        BOOL r = GetMessageW(&msg, nullptr, 0, 0);
+        if (r == 0 || r == -1) break;
         if (!IsDialogMessageW(hwnd, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
