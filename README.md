@@ -82,13 +82,19 @@ build.bat
 
 产物：`dist\SnipMagic.exe`
 
-## 打包绿色版
+## 打包
 
 ```bat
 package.bat
 ```
 
-生成目录：`截图大师SnipMagic-绿色版\`，内含 SnipMagic.exe（英文名）与 截图大师SnipMagic.exe（中文名）两个副本，拷贝到任意位置双击运行。
+产物都在 `dist\` 目录，共三个文件：
+
+- `SnipMagic.exe`（英文名，编译本名）
+- `截图大师SnipMagic.exe`（中文名副本，内容相同）
+- `SnipMagic.ini` 配置文件（已存在则原样保留，绝不覆盖；不存在时自动从旧版目录迁移或生成默认模板）
+
+发布到 Gitee Release 时，仅上传 dist 下的 `截图大师SnipMagic.exe`（`SnipMagic.exe` 与 `SnipMagic.ini` 不上传）。
 
 ## 目录结构
 
@@ -99,7 +105,7 @@ src/           源码（Win32 + GDI+）
 app.manifest   DPI / ComCtl 清单
 CMakeLists.txt CMake 工程
 build.bat      一键编译
-package.bat    打包绿色版
+package.bat    打包（装配 dist：双 exe + ini）
 dist/          编译输出
 ```
 
