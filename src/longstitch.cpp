@@ -212,6 +212,11 @@ bool Stitcher::verifyPixels(const FrameData& a, const FrameData& b, int dy,
     for (int y = top; y < bottom; y += rowStep) {
         const int ya = y + dy;
         if (ya < 0 || ya >= H) continue;
+        // 空白行不提供证据：微信式页面里背景行在任意 dy 下都"匹配"，
+        // 若计入分母会把错误的位移候选抬过 88% 阈值。
+        const bool evA = a.distinctive.empty() || a.distinctive[static_cast<size_t>(ya)];
+        const bool evB = b.distinctive.empty() || b.distinctive[static_cast<size_t>(y)];
+        if (!evA && !evB) continue;
         const uint8_t* ra = a.pixels.data() + static_cast<size_t>(ya) * a.w * 4;
         const uint8_t* rb = b.pixels.data() + static_cast<size_t>(y) * b.w * 4;
         ++rowChecked;
@@ -226,7 +231,7 @@ bool Stitcher::verifyPixels(const FrameData& a, const FrameData& b, int dy,
             }
         }
     }
-    if (rowChecked < 8 || total < 48) return false;
+    if (rowChecked < kMinEvidenceRows || total < 48) return false;
     return static_cast<double>(passed) / static_cast<double>(total) >= kVerifyThreshold;
 }
 
@@ -336,6 +341,35 @@ Stitcher::MatchResult Stitcher::detect(const FrameData& anchor, const FrameData&
         if (sad < 10.0 && std::abs(chosen) <= std::abs(dy2)) break;
     }
     if (got) {
+        // 帧内一致性：上/下半区在同一 dy 下都必须吻合。
+        // 微信滚动时抓到的"撕裂帧"（上半旧下半新）、懒加载重排、
+        // 新消息插入都会造成半区位移不一致；这种帧若拿来拼接，
+        // 撕裂线附近的内容会被错位贴进画布（块内重复/缺失）。宁跳过不错拼。
+        // 注意比对区间要按 dy 裁掉锚帧的固定头尾：dy>0 时锚帧页脚会被
+        // 映射进比对区（帧的内容行 vs 锚的固定页脚），不误裁会误报不一致。
+        int effTop = top;
+        int effBot = bottom;
+        if (chosen > 0) {
+            effBot = (std::min)(bottom, H - botBand - chosen);
+        } else if (chosen < 0) {
+            effTop = (std::max)(top, topBand - chosen);
+        }
+        const int mid = effTop + (effBot - effTop) / 2;
+        if (mid - effTop >= 24 && effBot - mid >= 24) {
+            const double sadTop = overlapSad(anchor, frame, chosen, effTop, mid);
+            const double sadBot = overlapSad(anchor, frame, chosen, mid, effBot);
+            if (sadTop > 30.0 || sadBot > 30.0) {
+#ifdef LC_DEBUG
+                std::fprintf(stdout, "  [detect] inconsistent halves dy=%d top=%.1f bot=%.1f -> Unknown\n",
+                             chosen, sadTop, sadBot);
+#endif
+                r.kind = MatchResult::Kind::Unknown;
+                r.unstable = true;
+                r.stickyTop = topBand;
+                r.stickyBottom = botBand;
+                return r;
+            }
+        }
         r.kind = MatchResult::Kind::Scrolled;
         r.dy = chosen;
         r.stickyTop = topBand;
@@ -436,10 +470,8 @@ int Stitcher::alignCanvasTailToFrame(const FrameData& frame, int stickyTop, int 
     const int lo = stickyTop;
     const int hi = e - K;
     if (hi < lo) return -1;
-    int bestOff = -1;
-    double best = 1e9;
-    // 逐行搜索（步长 1）：奇数滚动偏移也能精确对齐，杜绝 1px 接缝错位
-    for (int off = lo; off <= hi; ++off) {
+
+    auto scoreAt = [&](int off) -> double {
         double sum = 0.0;
         int cnt = 0;
         for (int i = 0; i < K; ++i) {
@@ -454,16 +486,93 @@ int Stitcher::alignCanvasTailToFrame(const FrameData& frame, int stickyTop, int 
                 ++cnt;
             }
         }
-        const double avg = cnt ? sum / cnt : 1e9;
-        // 严格最小值；并列时天然保留更小 off
-        // （重复可被 appendNewFrom 保险丝修正，缺失不可逆，故偏向更小 off）
-        if (avg < best - 1e-6) {
-            best = avg;
-            bestOff = off;
+        return cnt ? sum / cnt : 1e9;
+    };
+
+    // 第一遍：全局最优分
+    double best = 1e9;
+    for (int off = lo; off <= hi; ++off) {
+        const double avg = scoreAt(off);
+        if (avg < best) best = avg;
+    }
+    if (best > 30.0) {
+        if (outScore) *outScore = best;
+        return -1;
+    }
+
+    // 第二遍：收集所有与最优分接近的局部极小候选。
+    // 微信聊天里"好的""收到"这类短消息会原样重复，画布尾在帧内可能有
+    // 多个几乎一样好的匹配位置；旧逻辑取最靠上的，会把两段相同消息之间
+    // 已拼过的内容整段再贴一遍（用户看到的大块重复正源于此）。
+    const double margin = 3.0 + best * 0.10;
+    struct Cand { int off; double avg; };
+    std::vector<Cand> cands;
+    for (int off = lo; off <= hi; ++off) {
+        const double avg = scoreAt(off);
+        if (avg > best + margin) continue;
+        if (!cands.empty() && off - cands.back().off <= 2) {
+            if (avg < cands.back().avg) cands.back() = { off, avg };
+            continue;
+        }
+        cands.push_back({ off, avg });
+    }
+
+    int bestOff = cands.empty() ? -1 : cands[0].off;
+
+    // 第三遍：多候选时用「加长上下文」消歧——相同短消息的上方邻居通常不同。
+    // 核验通过的候选里取加长分最优；近似并列时偏向更大 off（更靠近最新内容，
+    // 抗重复）；无法加长核验时退回最优分候选。
+    if (cands.size() > 1) {
+        const int K2 = (std::min)(96, canvasRows_ / 2);
+        if (K2 >= K + 16) {
+            double bestExt = 1e9;
+            int bestExtOff = -1;
+            for (const Cand& c : cands) {
+                const int extStart = c.off - (K2 - K);
+                if (extStart < stickyTop) {
+#ifdef LC_DEBUG
+                    std::fprintf(stdout, "  [align]   cand off=%d k=%.2f ext=NA(页眉)\n",
+                                 c.off, c.avg);
+#endif
+                    continue; // 加长部分伸进页眉区，无法核验
+                }
+                double sum = 0.0;
+                int cnt = 0;
+                for (int i = 0; i < K2; ++i) {
+                    const uint8_t* rc = canvas_.data() +
+                        static_cast<size_t>(canvasRows_ - K2 + i) * stride;
+                    const uint8_t* rf = frame.pixels.data() +
+                        static_cast<size_t>(extStart + i) * stride;
+                    for (int x = 0; x < stride; x += 8) {
+                        sum += std::abs(rc[x] - rf[x]) +
+                               std::abs(rc[x + 1] - rf[x + 1]) +
+                               std::abs(rc[x + 2] - rf[x + 2]);
+                        ++cnt;
+                    }
+                }
+                const double ext = cnt ? sum / cnt : 1e9;
+#ifdef LC_DEBUG
+                std::fprintf(stdout, "  [align]   cand off=%d k=%.2f ext=%.2f\n",
+                             c.off, c.avg, ext);
+#endif
+                if (ext < bestExt - 1.0 ||
+                    (ext <= bestExt + 1.0 && c.off > bestExtOff)) {
+                    bestExt = ext;
+                    bestExtOff = c.off;
+                }
+            }
+            if (bestExtOff >= 0) {
+#ifdef LC_DEBUG
+                std::fprintf(stdout, "  [align] disambiguate %zu cands -> off=%d ext=%.2f\n",
+                             cands.size(), bestExtOff, bestExt);
+#endif
+                bestOff = bestExtOff;
+            }
         }
     }
+
     if (outScore) *outScore = best;
-    if (bestOff < 0 || best > 30.0) return -1;
+    if (bestOff < 0) return -1;
     // 微信类应用：消息之间是大片纯色背景。画布尾若恰好落在纯背景上，
     // 背景行在帧内处处 avg≈0，严格最小值会锁定最靠上的背景位置，
     // 导致整段已拼内容被重复追加。对策：匹配区必须含足够多「有特征行」，
@@ -571,7 +680,9 @@ bool Stitcher::rowOnCanvasStrict(const FrameData& frame, int y, int* outCanvasY)
 
     int bestCy = -1;
     double best = 1e9;
-    for (int cy = canvasRows_ - lookback; cy < canvasRows_; cy += 2) {
+    // 从画布尾向头扫：相同内容在画布上出现多次时，优先命中「最新」位置——
+    // 追加起点校正依赖它判断接缝是否正好接在画布末尾。
+    for (int cy = canvasRows_ - 2; cy >= canvasRows_ - lookback; cy -= 2) {
         if (cy < 1 || cy + 1 >= canvasRows_) continue;
         const uint8_t* c1 = canvas_.data() + static_cast<size_t>(cy) * stride;
         const double d1 = rowDiff(r1, c1);
@@ -593,87 +704,171 @@ bool Stitcher::rowOnCanvasStrict(const FrameData& frame, int y, int* outCanvasY)
     return false;
 }
 
+// 追加起点统一校正：对三条路径给出的 s 做最后把关。
+// 抗重复推进：若 frame[s] 起的一段能在画布上「逐行连续」匹配、且一路延伸到
+// 画布末尾，说明这段早已拼过（对齐被重复消息/空白骗到了），把 s 推进到重复区
+// 之后。注意必须确认匹配区延伸到画布尾——若匹配中断在画布中段，说明帧里这段
+// 是「新的重复内容」（用户又发了一遍同样的话），不能当重复吃掉。
+// 抗跳行回退：若 s 上一行是有特征且不在画布上的新内容，说明 s 偏大、
+// 接缝上方漏了新行，向后回退直到接上轨。
+int Stitcher::correctAppendStart(const FrameData& frame, int s, int stickyTop, int e) const {
+    if (s < 0 || frame.pixels.empty() || canvasRows_ < 24) return s;
+    if (s < stickyTop) s = stickyTop;
+    if (s > e) s = e;
+
+    const int stride = width_ * 4;
+    auto rowDiffAt = [&](int fy, int cy) -> double {
+        const uint8_t* rf = frame.pixels.data() + static_cast<size_t>(fy) * stride;
+        const uint8_t* rc = canvas_.data() + static_cast<size_t>(cy) * stride;
+        double sum = 0.0;
+        int cnt = 0;
+        for (int x = 0; x < stride; x += 6) {
+            sum += std::abs(rf[x] - rc[x]) +
+                   std::abs(rf[x + 1] - rc[x + 1]) +
+                   std::abs(rf[x + 2] - rc[x + 2]);
+            ++cnt;
+        }
+        return cnt ? sum / cnt : 1e9;
+    };
+    // 直接比对画布最末几行（rowOnCanvasStrict 要三行上下文，够不到末行）
+    auto onCanvasTail = [&](int fy) -> bool {
+        for (int probe = canvasRows_ - 1; probe >= canvasRows_ - 3 && probe >= 0; --probe) {
+            if (rowDiffAt(fy, probe) < 12.0) return true;
+        }
+        return false;
+    };
+
+    // 抗重复推进：假设「frame[s..] 是画布 [cy0..] 的复制品」，直接按假设位置
+    // 逐行比对（不能用 rowOnCanvasStrict 逐行搜——重复区里的空白行会在画布上
+    // 到处乱匹配，打断连续性判断；且它够不到画布末行，接缝级重复会漏网）。
+    // 有特征行全部吻合、且匹配区一路延伸到画布末尾，才确认这段已拼过，
+    // 把 s 推进到重复区之后。若匹配中途在有特征行上断裂，说明帧里这段是
+    // 「新的重复内容」（用户又发了一遍同样的话），不能当重复吃掉。
+    {
+        int cy0 = -1;
+        if (s < e) {
+            for (int probe = canvasRows_ - 1; probe >= canvasRows_ - 6 && probe >= 0; --probe) {
+                if (rowDiffAt(s, probe) < 12.0) {
+                    cy0 = probe;
+                    break;
+                }
+            }
+            if (cy0 < 0) {
+                rowOnCanvasStrict(frame, s, &cy0);
+            }
+        }
+        if (cy0 >= 0) {
+            int runLen = 0;
+            bool brokeOnDistinctive = false;
+            const int maxRun = (std::min)(e - s, canvasRows_ - cy0);
+            for (int i = 0; i < maxRun; ++i) {
+                const int fy = s + i;
+                const double d = rowDiffAt(fy, cy0 + i);
+                if (d < 12.0) {
+                    runLen = i + 1;
+                    continue;
+                }
+                const bool dist = !frame.distinctive.empty() &&
+                                  frame.distinctive[static_cast<size_t>(fy)];
+                if (dist) {
+                    brokeOnDistinctive = true;
+                    break;
+                }
+                // 空白行不吻合（重绘微差）：容忍，不延伸也不中断
+            }
+            if (!brokeOnDistinctive && runLen > 0 && cy0 + runLen >= canvasRows_ - 3) {
+#ifdef LC_DEBUG
+                if (runLen > 1) {
+                    std::fprintf(stdout, "  [correct] anti-dup s %d -> %d (dup %d rows to tail)\n",
+                                 s, s + runLen, runLen);
+                }
+#endif
+                s += runLen;
+            }
+        }
+    }
+
+    // 抗跳行回退：s 上一行是有特征且不在画布上的新内容 → s 偏大，回退接上轨
+    int guard = 0;
+    while (s - 1 > stickyTop && guard < 60) {
+        if (!frame.distinctive.empty() &&
+            !frame.distinctive[static_cast<size_t>(s - 1)]) {
+            break; // 空白行无法判读，停（宁可少退也不错退）
+        }
+        int cy = -1;
+        if (rowOnCanvasStrict(frame, s - 1, &cy)) break; // 已接上轨
+        if (onCanvasTail(s - 1)) break;                  // 已接上轨（末行直比）
+        --s;
+        ++guard;
+    }
+    if (s < stickyTop) s = stickyTop;
+    return s;
+}
+
 int Stitcher::resolveAppendStart(const FrameData& frame, int stickyTop, int e,
                                  double* outScore, int anchorDy) const {
     if (outScore) *outScore = 1e9;
     if (e <= stickyTop || frame.pixels.empty() || canvasRows_ < 24) return -1;
 
-    // 1) 画布尾部 ↔ 新帧 对齐：严格最优，禁止回拉（回拉会导致重复）
+    int s = -1;
+
+    // 1) 画布尾部 ↔ 新帧 对齐：严格最优 + 多候选加长上下文消歧
     double sc = 1e9;
     const int sTail = alignCanvasTailToFrame(frame, stickyTop, e, &sc);
     if (sTail >= 0 && sc < 24.0) {
-        const int s = (std::max)(stickyTop, (std::min)(e, sTail));
-        // 接缝质量：canvas tail 应对齐到 frame[s-K, s)，用 s 处再验一下
+        s = (std::max)(stickyTop, (std::min)(e, sTail));
         if (outScore) *outScore = sc;
-        return s;
     }
 
     // 2) 纯背景尾（微信式页面）：内容定位不可用，但若画布尾恰为锚帧底部
     //    且本次位移已通过像素校验，可直接用位移推算追加起点
-    if (anchorDy > 0 && tailAtAnchor_) {
-        const int s = e - anchorDy;
-        if (s >= stickyTop && s < e) {
+    if (s < 0 && anchorDy > 0 && tailAtAnchor_) {
+        const int sd = e - anchorDy;
+        if (sd >= stickyTop && sd < e) {
+            s = sd;
             if (outScore) *outScore = 20.0;
-            return s;
         }
     }
 
     // 3) 底部必须是「新」的；接缝处必须能证明上方有「已在画布」的内容
-    int cy = -1;
-    if (rowOnCanvasStrict(frame, e - 2, &cy)) {
-        // 底部已在画布 → 没有可靠新增
-        return -1;
-    }
-    // 从下往上找最后一个「已在画布」的行
-    int lastOn = -1;
-    for (int y = e - 3; y > stickyTop + 2; y -= 2) {
-        int c2 = -1;
-        if (rowOnCanvasStrict(frame, y, &c2)) {
-            // 连续两行都命中才可信
-            int c3 = -1;
-            if (y - 2 > stickyTop && rowOnCanvasStrict(frame, y - 2, &c3)) {
-                lastOn = y;
-                break;
+    if (s < 0) {
+        int cy = -1;
+        if (rowOnCanvasStrict(frame, e - 2, &cy)) {
+            // 底部已在画布 → 没有可靠新增
+            return -1;
+        }
+        // 从下往上找最后一个「已在画布」的行
+        int lastOn = -1;
+        for (int y = e - 3; y > stickyTop + 2; y -= 2) {
+            int c2 = -1;
+            if (rowOnCanvasStrict(frame, y, &c2)) {
+                // 连续两行都命中才可信
+                int c3 = -1;
+                if (y - 2 > stickyTop && rowOnCanvasStrict(frame, y - 2, &c3)) {
+                    lastOn = y;
+                    break;
+                }
+            }
+        }
+        if (lastOn > stickyTop + 2) {
+            // 仅当新增区较小且紧贴已对齐尾部时才采信回溯结果；
+            // 增量过大会把已上画布的内容整段重复贴一遍，宁可提示重对齐。
+            if (e - lastOn >= 2 && e - lastOn <= 50) {
+                s = lastOn + 1;
+                if (outScore) *outScore = 22.0;
             }
         }
     }
-    if (lastOn > stickyTop + 2) {
-        // 仅当新增区较小且紧贴已对齐尾部时才采信回溯结果；
-        // 增量过大会把已上画布的内容整段重复贴一遍，宁可提示重对齐。
-        if (e - lastOn >= 2 && e - lastOn <= 50) {
-            if (outScore) *outScore = 22.0;
-            return lastOn + 1;
-        }
-    }
-    return -1;
+
+    if (s < 0) return -1;
+    return correctAppendStart(frame, s, stickyTop, e);
 }
 
 Event Stitcher::appendNewFrom(const FrameData& frame, int s, int e, bool gap) {
     if (e <= s) return Event::NoChange;
-    // 保险丝：若 frame[s] 与画布末尾几乎逐像素相同，说明 s 偏小，向后跳，避免重复。
-    // 阈值 1.5 + 上限 8 行：只兜"对齐差几行"的小偏差。上限太大（旧值 48）会把
-    // 微信式页面上消息之间的成片纯空白误当重复跳过，造成空白被压缩/内容缺失。
-    if (canvasRows_ >= 8 && !frame.pixels.empty()) {
-        const int stride = width_ * 4;
-        for (int guard = 0; guard < 8 && s < e; ++guard) {
-            const uint8_t* rf = frame.pixels.data() + static_cast<size_t>(s) * stride;
-            const uint8_t* rc = canvas_.data() + static_cast<size_t>(canvasRows_ - 1) * stride;
-            double sum = 0.0;
-            int cnt = 0;
-            for (int x = 0; x < stride; x += 6) {
-                sum += std::abs(rf[x] - rc[x]) +
-                       std::abs(rf[x + 1] - rc[x + 1]) +
-                       std::abs(rf[x + 2] - rc[x + 2]);
-                ++cnt;
-            }
-            if (cnt > 0 && sum / cnt < 1.5) {
-                ++s;
-                continue;
-            }
-            break;
-        }
-    }
-    if (e <= s) return Event::NoChange;
+    // 注：历史上这里有个"若 frame[s] 与画布末行几乎相同就向后跳"的保险丝（最多 8 行）。
+    // 它会在画布内容里制造文档坐标空洞，导致加长上下文核验对真正确的候选误判；
+    // 接缝级重复现由 correctAppendStart 的抗重复推进统一处理，故移除。
     if (e - s < kMinNewRows) return Event::NoChange;
 #ifdef LC_DEBUG
     std::fprintf(stdout, "  [appendNewFrom] s=%d e=%d gap=%d canvasRows_before=%d\n", s, e, (int)gap, canvasRows_);
@@ -938,6 +1133,23 @@ Event Stitcher::Process(const FrameData& frame, double nowSec) {
         anchorTime_ = nowSec;
         return Event::NoChange;
     }
+
+    // 不稳定帧（撕裂/懒加载重排/新消息插入）：不拼（撕裂线会被烙进画布），
+    // 默认也不污染锚点——撕裂是瞬时的，下一帧仍应与旧锚点比较，恢复零成本。
+    // 连续 3 帧不稳定说明是持续性变化（插入后内容重排），接受它当新锚点。
+    if (m.unstable) {
+        ++skipAlignCount_;
+        ++suspectSeams_;
+        ++unstableStreak_;
+        if (unstableStreak_ >= 3) {
+            anchor_ = frame;
+            anchorTime_ = nowSec;
+            tailAtAnchor_ = false;
+            unstableStreak_ = 0;
+        }
+        return Event::NeedOverlap;
+    }
+    unstableStreak_ = 0;
 
     if (m.kind == MatchResult::Kind::Unknown ||
         m.kind == MatchResult::Kind::Scrolled) {

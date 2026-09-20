@@ -600,6 +600,18 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
             }
         }
 
+        // 框选区内空白处按下：把选区画面“抠起”——原位置直接烙白进底图，
+        // 抠出的内容变成可拖动的图片图层（移花接木同款交互）
+        if (tool_ == Tool::Select && doc_->hasRegion) {
+            int rx = 0, ry = 0, rw = 0, rh = 0;
+            if (doc_->GetRegion(rx, ry, rw, rh) &&
+                util::PtInRectF(RectF(static_cast<float>(rx), static_cast<float>(ry),
+                                      static_cast<float>(rw), static_cast<float>(rh)),
+                                ix, iy)) {
+                if (BeginRegionContentMove(rx, ry, rw, rh, ix, iy)) return;
+            }
+        }
+
         if (tool_ == Tool::Select) {
             doc_->ClearSelection();
             doc_->ClearRegion();
@@ -704,6 +716,52 @@ void Canvas::BeginDraw(float ix, float iy) {
     }
     dragMode_ = DragMode::Draw;
     Refresh();
+}
+
+// 框选区内按下：把选区画面抠成图片图层，原位置用纯白直接烙进底图
+//（不是浮层，保存/导出后依然是白的）。抠出的图层随鼠标拖动，松手落位。
+bool Canvas::BeginRegionContentMove(int rx, int ry, int rw, int rh, float ix, float iy) {
+    const int bw = doc_->Width();
+    const int bh = doc_->Height();
+    const int cx = (std::max)(0, rx);
+    const int cy = (std::max)(0, ry);
+    const int cw = (std::min)(bw - cx, rw);
+    const int ch = (std::min)(bh - cy, rh);
+    if (cw < 4 || ch < 4) return false;
+
+    doc_->PushUndo();
+    auto piece = util::CropBitmap(doc_->base.get(), cx, cy, cw, ch);
+    if (!piece) {
+        if (!doc_->undoStack.empty()) doc_->undoStack.pop_back();
+        return false;
+    }
+    {
+        Graphics g(doc_->base.get());
+        g.SetInterpolationMode(InterpolationModeNearestNeighbor);
+        g.SetPixelOffsetMode(PixelOffsetModeHalf);
+        SolidBrush white(Color(255, 255, 255, 255));
+        g.FillRectangle(&white, cx, cy, cw, ch);
+    }
+    auto img = doc_->CreatePasteFrom(std::move(piece),
+                                     static_cast<float>(cx), static_cast<float>(cy));
+    if (!img) {
+        if (!doc_->undoStack.empty()) doc_->undoStack.pop_back();
+        return false;
+    }
+    img->selected = true;
+    doc_->ClearSelection();
+    doc_->ClearRegion();
+    const int idx = static_cast<int>(doc_->annotations.size());
+    doc_->annotations.push_back(std::move(img));
+    doc_->selectedIdx = idx;
+    dragMode_ = DragMode::Move;
+    moveOriginX_ = ix;
+    moveOriginY_ = iy;
+    moveBackup_ = doc_->annotations[idx]->Clone();
+    Refresh();
+    App::Instance().ShowStatusMessage(
+        L"已抠起选区画面：原位置已填白；拖到新位置松手，Delete 丢弃，Ctrl+Z 撤销");
+    return true;
 }
 
 void Canvas::OnMouseMove(int x, int y) {

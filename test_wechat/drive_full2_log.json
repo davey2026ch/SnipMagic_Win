@@ -1,0 +1,39 @@
+{
+ "steps": [
+  {
+   "name": "launch",
+   "data": "34496",
+   "t": 1789877246.7387717
+  },
+  {
+   "name": "main",
+   "data": "{'hwnd': 4459808, 'title': '截图工具 1.4.0', 'cls': 'ScreenshotToolMainWindow', 'rect': [920, 350, 2920, 1750], 'visible': True}",
+   "t": 1789877247.0495286
+  },
+  {
+   "name": "wechat_restored",
+   "data": "None",
+   "t": 1789877249.3651826
+  },
+  {
+   "name": "click_long_btn",
+   "data": "[1034, 385]",
+   "t": 1789877249.5094233
+  },
+  {
+   "name": "overlay_shot",
+   "data": "None",
+   "t": 1789877252.6108613
+  },
+  {
+   "name": "bar",
+   "data": "[]",
+   "t": 1789877255.5164745
+  },
+  {
+   "name": "error",
+   "data": "RuntimeError('no bar')",
+   "t": 1789877255.5164745
+  }
+ ]
+}

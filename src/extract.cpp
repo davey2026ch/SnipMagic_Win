@@ -278,6 +278,167 @@ UINT_PTR ShowProgressAndRun(HWND owner, const wchar_t* title, ProgressState& st)
 }
 
 // ---------- MinerU API steps ----------
+// 超长图竖向切带：MinerU/VLM 会把整图缩到内部分辨率，超长图上的小字会糊——
+// 实测 1400×6060 聊天长图整图上传：内容丢 35%、顺序错乱、名字认错。
+// 切带（高 1400、重叠 100）后批次上传，再按序合并 markdown 即可恢复。
+struct SliceBand { int y0, y1; };
+
+std::vector<SliceBand> PlanSlices(int h) {
+    const int kSliceH = 1400, kOverlap = 100, kTrigger = 2000;
+    std::vector<SliceBand> bands;
+    if (h <= kTrigger) {
+        bands.push_back({ 0, h });
+        return bands;
+    }
+    const int step = kSliceH - kOverlap;
+    for (int y = 0; y < h; y += step) {
+        const int y1 = (std::min)(h, y + kSliceH);
+        bands.push_back({ y, y1 });
+        if (y1 >= h) break;
+    }
+    // 尾带太碎时并回上一带
+    if (bands.size() > 1 && bands.back().y1 - bands.back().y0 < 300) {
+        bands[bands.size() - 2].y1 = bands.back().y1;
+        bands.pop_back();
+    }
+    return bands;
+}
+
+// 归一化行（去首尾空白）用于跨带去重比较
+std::string NormMdLine(std::string s) {
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.pop_back();
+    size_t i = 0;
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
+    return s.substr(i);
+}
+
+// 合并相邻带的 markdown：切带重叠区会被识别两遍，去掉 cur 开头与 acc 结尾
+// 重复的行（最多核对 6 个非空行，宁漏删不错删）
+void MergeSliceMarkdown(std::string& acc, const std::string& cur) {
+    if (acc.empty()) { acc = cur; return; }
+    // 拆 cur 为行
+    std::vector<std::string> lines;
+    size_t i = 0;
+    while (i <= cur.size()) {
+        size_t nl = cur.find('\n', i);
+        if (nl == std::string::npos) nl = cur.size();
+        lines.push_back(cur.substr(i, nl - i));
+        if (nl >= cur.size()) break;
+        i = nl + 1;
+    }
+    // acc 末尾的非空行（最多 6 行，归一化）
+    std::vector<std::string> accTail;
+    {
+        size_t p = acc.size();
+        while (p > 0 && accTail.size() < 6) {
+            size_t nl = acc.rfind('\n', p - 1);
+            std::string line = (nl == std::string::npos) ? acc.substr(0, p)
+                                                         : acc.substr(nl + 1, p - nl - 1);
+            std::string n = NormMdLine(line);
+            if (!n.empty()) accTail.insert(accTail.begin(), n);
+            if (nl == std::string::npos) break;
+            p = nl;
+        }
+    }
+    // cur 开头非空行的下标（最多 10 个）
+    std::vector<int> curNE;
+    for (size_t k = 0; k < lines.size() && curNE.size() < 10; ++k) {
+        if (!NormMdLine(lines[k]).empty()) curNE.push_back(static_cast<int>(k));
+    }
+    // 找最大 k：acc 尾部 k 行 == cur 头部 k 行
+    int best = 0;
+    const int maxK = (std::min)(accTail.size(), curNE.size());
+    for (int k = static_cast<int>(maxK); k >= 1 && best == 0; --k) {
+        bool eq = true;
+        for (int t = 0; t < k; ++t) {
+            if (NormMdLine(lines[static_cast<size_t>(curNE[static_cast<size_t>(t)])]) !=
+                accTail[accTail.size() - k + t]) {
+                eq = false;
+                break;
+            }
+        }
+        if (eq) best = k;
+    }
+    size_t startLine = 0;
+    if (best > 0) {
+        startLine = static_cast<size_t>(curNE[static_cast<size_t>(best - 1)]) + 1;
+    }
+    std::string piece;
+    for (size_t k = startLine; k < lines.size(); ++k) {
+        if (!piece.empty()) piece.push_back('\n');
+        piece += lines[k];
+    }
+    // 拼接：保证 acc 以换行结尾
+    if (!acc.empty() && acc.back() != '\n') acc.push_back('\n');
+    acc += piece;
+}
+
+// 把一条带的图片收进结果：文件名加 sN_ 前缀防跨带重名，md 引用同步改写
+void CollectSliceImages(const std::wstring& unpack, int sliceIdx,
+                        const std::string& mdUtf8hint, ExtractResult& out) {
+    (void)mdUtf8hint;
+    std::wstring mdPath = ziputil::FindFileByName(unpack, L"full.md");
+    std::wstring mdDir = unpack;
+    if (!mdPath.empty()) {
+        size_t slash = mdPath.find_last_of(L"\\/");
+        if (slash != std::wstring::npos) mdDir = mdPath.substr(0, slash);
+    }
+    std::wstring imgDir = mdDir + L"\\images";
+    std::vector<std::wstring> imgFiles;
+    ziputil::ListDir(imgDir, imgFiles, false);
+    std::wstring baseDir = imgDir;
+    std::wstring relBase = L"images/";
+    if (imgFiles.empty()) {
+        std::vector<std::wstring> sibling;
+        ziputil::ListDir(mdDir, sibling, false);
+        for (const auto& f : sibling) {
+            std::wstring low = f;
+            for (auto& c : low) c = static_cast<wchar_t>(towlower(c));
+            if (low.size() > 4 &&
+                (low.rfind(L".png") == low.size() - 4 || low.rfind(L".jpg") == low.size() - 4 ||
+                 low.rfind(L".jpeg") == low.size() - 5 || low.rfind(L".bmp") == low.size() - 4 ||
+                 low.rfind(L".gif") == low.size() - 4 || low.rfind(L".webp") == low.size() - 5)) {
+                imgFiles.push_back(f);
+            }
+        }
+        baseDir = mdDir;
+        relBase = L"";
+    }
+    const std::wstring prefix = L"s" + std::to_wstring(sliceIdx) + L"_";
+    for (const auto& f : imgFiles) {
+        ExtractImage im;
+        im.fileName = prefix + f;
+        im.relPath = relBase + prefix + f;
+        im.absPath = baseDir + L"\\" + f;
+        std::vector<BYTE> bytes;
+        if (netutil::ReadFileBytes(im.absPath, bytes)) {
+            im.pngOrRaw.assign(bytes.begin(), bytes.end());
+            DecodeImageSize(im.pngOrRaw, im.width, im.height);
+        }
+        out.images.push_back(std::move(im));
+    }
+}
+
+// 带内 markdown 的图片引用改到加前缀后的文件名
+std::string RewriteSliceImageRefs(const std::string& md, int sliceIdx) {
+    const std::string prefix = "s" + std::to_string(sliceIdx) + "_";
+    std::string out;
+    out.reserve(md.size() + 64);
+    size_t i = 0;
+    while (i < md.size()) {
+        // 只改写 ](images/ 或 src="images/ 之后的文件名
+        size_t hit = md.find("images/", i);
+        if (hit == std::string::npos) {
+            out += md.substr(i);
+            break;
+        }
+        out += md.substr(i, hit - i + 7);
+        out += prefix;
+        i = hit + 7;
+    }
+    return out;
+}
+
 bool MineruExtractOnBitmap(Bitmap* bmp, const std::wstring& tokenIn,
                            ProgressState& prog, ExtractResult& out) {
     const std::wstring token = util::TrimToken(tokenIn);
@@ -291,141 +452,137 @@ bool MineruExtractOnBitmap(Bitmap* bmp, const std::wstring& tokenIn,
     }
 
     out.workDir = netutil::MakeTempDir(L"mineru_");
-    std::wstring imgPath = out.workDir + L"\\screenshot.png";
-    if (!util::SaveBitmapToFile(bmp, imgPath, false)) {
-        out.errorMsg = L"临时图片保存失败";
+    auto fail = [&](const std::wstring& msg) {
+        out.errorMsg = msg;
         netutil::DeletePathRecursive(out.workDir);
         out.workDir.clear();
         return false;
-    }
-    std::vector<BYTE> imgBytes;
-    if (!netutil::ReadFileBytes(imgPath, imgBytes) || imgBytes.empty()) {
-        out.errorMsg = L"读取临时图片失败";
-        netutil::DeletePathRecursive(out.workDir);
-        out.workDir.clear();
-        return false;
-    }
-
-    if (prog.cancel.IsCancelled()) {
+    };
+    auto failCancel = [&]() {
         out.cancelled = true;
         out.errorMsg = L"已取消";
         netutil::DeletePathRecursive(out.workDir);
         out.workDir.clear();
         return false;
-    }
+    };
 
-    prog.status = L"正在申请上传地址";
+    // 1) 切带并保存每片 PNG
+    const int imgW = static_cast<int>(bmp->GetWidth());
+    const int imgH = static_cast<int>(bmp->GetHeight());
+    const std::vector<SliceBand> bands = PlanSlices(imgH);
+    const int sliceN = static_cast<int>(bands.size());
+
+    std::vector<std::pair<std::wstring, std::vector<BYTE>>> uploads; // (name, bytes)
+    for (int bi = 0; bi < sliceN; ++bi) {
+        std::wstring name = L"slice_" + std::to_wstring(bi) + L".png";
+        std::wstring path = out.workDir + L"\\" + name;
+        bool saved = false;
+        if (sliceN == 1) {
+            saved = util::SaveBitmapToFile(bmp, path, false);
+        } else {
+            Bitmap* part = bmp->Clone(0, bands[bi].y0, imgW,
+                                      bands[bi].y1 - bands[bi].y0, PixelFormat32bppARGB);
+            if (part) {
+                saved = util::SaveBitmapToFile(part, path, false);
+                delete part;
+            }
+        }
+        if (!saved) return fail(L"临时图片保存失败");
+        std::vector<BYTE> bytes;
+        if (!netutil::ReadFileBytes(path, bytes) || bytes.empty()) {
+            return fail(L"读取临时图片失败");
+        }
+        uploads.push_back({ name, std::move(bytes) });
+    }
+    if (uploads.empty()) return fail(L"临时图片保存失败");
+
+    if (prog.cancel.IsCancelled()) return failCancel();
+
+    // 2) 申请批次（一次含全部片）
+    prog.status = sliceN > 1
+        ? util::Format(L"图片过长，已切 %d 片识别：正在申请上传地址", sliceN)
+        : L"正在申请上传地址";
     if (prog.hwnd && IsWindow(prog.hwnd)) {
         SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), prog.status.c_str());
     }
 
     const std::wstring base = L"https://mineru.net/api/v4";
-    std::string req =
-        "{\"files\":[{\"name\":\"screenshot.png\",\"is_ocr\":true}],"
-        "\"model_version\":\"vlm\",\"language\":\"ch\","
-        "\"enable_table\":true,\"enable_formula\":false}";
+    std::string req = "{\"files\":[";
+    for (int bi = 0; bi < sliceN; ++bi) {
+        if (bi) req += ",";
+        req += "{\"name\":\"slice_" + std::to_string(bi) + ".png\",\"is_ocr\":true}";
+    }
+    req += "],\"model_version\":\"vlm\",\"language\":\"ch\","
+           "\"enable_table\":true,\"enable_formula\":false}";
 
     netutil::HttpResponse resp;
     if (!netutil::PostJson(base + L"/file-urls/batch", token, req, resp, &prog.cancel)) {
-        out.cancelled = prog.cancel.IsCancelled();
-        out.errorMsg = out.cancelled ? L"已取消" : (resp.error.empty() ? L"创建批次失败" : resp.error);
-        netutil::DeletePathRecursive(out.workDir);
-        out.workDir.clear();
-        return false;
+        if (prog.cancel.IsCancelled()) return failCancel();
+        return fail(resp.error.empty() ? L"创建批次失败" : resp.error);
     }
-    if (!resp.ok()) {
-        out.errorMsg = netutil::ExtractApiError(resp);
-        netutil::DeletePathRecursive(out.workDir);
-        out.workDir.clear();
-        return false;
-    }
+    if (!resp.ok()) return fail(netutil::ExtractApiError(resp));
 
     netutil::Json j = netutil::Parse(resp.body);
     const netutil::Json* data = j.Find("data");
-    if (!data) {
-        out.errorMsg = L"响应缺少 data";
-        netutil::DeletePathRecursive(out.workDir);
-        out.workDir.clear();
-        return false;
-    }
+    if (!data) return fail(L"响应缺少 data");
     const netutil::Json* batch = data->Find("batch_id");
     const netutil::Json* urls = data->Find("file_urls");
     if (!batch || !urls || !urls->At(0)) {
-        out.errorMsg = L"响应缺少 batch_id / file_urls";
-        netutil::DeletePathRecursive(out.workDir);
-        out.workDir.clear();
-        return false;
+        return fail(L"响应缺少 batch_id / file_urls");
     }
     std::wstring batchId = batch->AsWStr();
-    std::wstring uploadUrl = urls->At(0)->AsWStr();
-
-    if (prog.cancel.IsCancelled()) {
-        out.cancelled = true;
-        netutil::DeletePathRecursive(out.workDir);
-        out.workDir.clear();
-        return false;
+    std::vector<std::wstring> uploadUrls;
+    for (int bi = 0; bi < sliceN; ++bi) {
+        const netutil::Json* u = urls->At(bi);
+        if (!u) return fail(L"响应 file_urls 数量不足");
+        uploadUrls.push_back(u->AsWStr());
     }
 
-    prog.status = L"正在上传图片";
-    if (prog.hwnd && IsWindow(prog.hwnd))
-        SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), prog.status.c_str());
+    if (prog.cancel.IsCancelled()) return failCancel();
 
-    netutil::HttpResponse up;
-    // 不带 Content-Type，纯二进制 PUT
-    if (!netutil::PutBinary(uploadUrl, L"", imgBytes, true, up, &prog.cancel)) {
-        out.cancelled = prog.cancel.IsCancelled();
-        out.errorMsg = out.cancelled ? L"已取消" : L"图片上传失败";
-        netutil::DeletePathRecursive(out.workDir);
-        out.workDir.clear();
-        return false;
-    }
-    if (!up.ok() && up.status != 200 && up.status != 204) {
-        out.errorMsg = netutil::ExtractApiError(up);
-        netutil::DeletePathRecursive(out.workDir);
-        out.workDir.clear();
-        return false;
-    }
+    // 3) 逐片上传
+    for (int bi = 0; bi < sliceN; ++bi) {
+        prog.status = sliceN > 1
+            ? util::Format(L"正在上传图片（%d/%d）", bi + 1, sliceN)
+            : L"正在上传图片";
+        if (prog.hwnd && IsWindow(prog.hwnd))
+            SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), prog.status.c_str());
 
+        netutil::HttpResponse up;
+        // 不带 Content-Type，纯二进制 PUT
+        if (!netutil::PutBinary(uploadUrls[bi], L"", uploads[bi].second, true, up, &prog.cancel)) {
+            if (prog.cancel.IsCancelled()) return failCancel();
+            return fail(L"图片上传失败");
+        }
+        if (!up.ok() && up.status != 200 && up.status != 204) {
+            return fail(netutil::ExtractApiError(up));
+        }
+        if (prog.cancel.IsCancelled()) return failCancel();
+    }
+    uploads.clear(); // 释放内存
+
+    // 4) 轮询直到全部片完成
     prog.status = L"正在识别内容";
     if (prog.hwnd && IsWindow(prog.hwnd))
         SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), prog.status.c_str());
 
-    std::wstring zipUrl;
+    std::vector<std::wstring> zipUrls(static_cast<size_t>(sliceN));
     const DWORD start = GetTickCount();
-    const DWORD timeoutMs = 300000; // 300s
+    const DWORD timeoutMs = 300000 + 120000 * (sliceN - 1); // 300s + 每片加 120s
     while (true) {
-        if (prog.cancel.IsCancelled()) {
-            out.cancelled = true;
-            out.errorMsg = L"已取消";
-            netutil::DeletePathRecursive(out.workDir);
-            out.workDir.clear();
-            return false;
-        }
+        if (prog.cancel.IsCancelled()) return failCancel();
         if (GetTickCount() - start > timeoutMs) {
-            out.errorMsg = L"识别超时（300 秒）";
-            netutil::DeletePathRecursive(out.workDir);
-            out.workDir.clear();
-            return false;
+            return fail(L"识别超时");
         }
 
         netutil::HttpResponse poll;
         std::wstring pollUrl = base + L"/extract-results/batch/" + batchId;
         if (!netutil::GetJson(pollUrl, token, poll, &prog.cancel)) {
-            if (prog.cancel.IsCancelled()) {
-                out.cancelled = true;
-                netutil::DeletePathRecursive(out.workDir);
-                out.workDir.clear();
-                return false;
-            }
+            if (prog.cancel.IsCancelled()) return failCancel();
             Sleep(2000);
             continue;
         }
-        if (!poll.ok()) {
-            out.errorMsg = netutil::ExtractApiError(poll);
-            netutil::DeletePathRecursive(out.workDir);
-            out.workDir.clear();
-            return false;
-        }
+        if (!poll.ok()) return fail(netutil::ExtractApiError(poll));
 
         netutil::Json pj = netutil::Parse(poll.body);
         const netutil::Json* pdata = pj.Find("data");
@@ -435,129 +592,78 @@ bool MineruExtractOnBitmap(Bitmap* bmp, const std::wstring& tokenIn,
             Sleep(2000);
             continue;
         }
-        const netutil::Json* state = first->Find("state");
-        std::wstring st = state ? state->AsWStr() : L"";
-        if (st == L"done") {
-            const netutil::Json* z = first->Find("full_zip_url");
-            zipUrl = z ? z->AsWStr() : L"";
-            if (zipUrl.empty()) {
-                out.errorMsg = L"识别完成但缺少 full_zip_url";
-                netutil::DeletePathRecursive(out.workDir);
-                out.workDir.clear();
-                return false;
+        int doneN = 0;
+        std::wstring firstErr;
+        for (int bi = 0; bi < sliceN; ++bi) {
+            const netutil::Json* e = er->At(bi);
+            if (!e) continue;
+            const netutil::Json* state = e->Find("state");
+            std::wstring st = state ? state->AsWStr() : L"";
+            if (st == L"done") {
+                const netutil::Json* z = e->Find("full_zip_url");
+                zipUrls[static_cast<size_t>(bi)] = z ? z->AsWStr() : L"";
+                ++doneN;
+            } else if (st == L"failed") {
+                const netutil::Json* em = e->Find("err_msg");
+                firstErr = em && !em->AsWStr().empty() ? em->AsWStr() : L"识别失败";
+                ++doneN;
             }
-            break;
         }
-        if (st == L"failed") {
-            const netutil::Json* e = first->Find("err_msg");
-            out.errorMsg = e && !e->AsWStr().empty() ? e->AsWStr() : L"识别失败";
-            netutil::DeletePathRecursive(out.workDir);
-            out.workDir.clear();
-            return false;
+        if (doneN < sliceN) {
+            Sleep(2000);
+            continue;
         }
-        Sleep(2000);
+        if (!firstErr.empty()) return fail(firstErr);
+        break;
     }
 
-    if (prog.cancel.IsCancelled()) {
-        out.cancelled = true;
-        netutil::DeletePathRecursive(out.workDir);
-        out.workDir.clear();
-        return false;
-    }
+    if (prog.cancel.IsCancelled()) return failCancel();
 
-    prog.status = L"正在下载结果";
-    if (prog.hwnd && IsWindow(prog.hwnd))
-        SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), prog.status.c_str());
-
-    netutil::HttpResponse zipResp;
-    if (!netutil::GetBinary(zipUrl, zipResp, &prog.cancel) || zipResp.binary.empty()) {
-        out.cancelled = prog.cancel.IsCancelled();
-        out.errorMsg = out.cancelled ? L"已取消" : L"下载识别结果失败";
-        netutil::DeletePathRecursive(out.workDir);
-        out.workDir.clear();
-        return false;
-    }
-
-    std::wstring zipPath = out.workDir + L"\\result.zip";
-    netutil::WriteFileBytes(zipPath, zipResp.binary.data(), zipResp.binary.size());
-    std::wstring unpack = out.workDir + L"\\unpacked";
-    CreateDirectoryW(unpack.c_str(), nullptr);
-    if (!ziputil::ExtractZipShell(zipPath, unpack, L"full.md", 15000)) {
-        // try find any .md
-        std::wstring anyMd = ziputil::FindFileByName(unpack, L"full.md");
-        if (anyMd.empty()) {
-            out.errorMsg = L"解压识别结果失败";
-            netutil::DeletePathRecursive(out.workDir);
-            out.workDir.clear();
-            return false;
+    // 5) 逐片下载结果、解析、按序合并
+    std::string merged;
+    for (int bi = 0; bi < sliceN; ++bi) {
+        if (zipUrls[static_cast<size_t>(bi)].empty()) {
+            return fail(util::Format(L"第 %d 片识别完成但缺少结果地址", bi + 1));
         }
+        prog.status = sliceN > 1
+            ? util::Format(L"正在下载结果（%d/%d）", bi + 1, sliceN)
+            : L"正在下载结果";
+        if (prog.hwnd && IsWindow(prog.hwnd))
+            SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), prog.status.c_str());
+
+        netutil::HttpResponse zipResp;
+        if (!netutil::GetBinary(zipUrls[static_cast<size_t>(bi)], zipResp, &prog.cancel) ||
+            zipResp.binary.empty()) {
+            if (prog.cancel.IsCancelled()) return failCancel();
+            return fail(L"下载识别结果失败");
+        }
+
+        std::wstring zipPath = out.workDir + L"\\result_" + std::to_wstring(bi) + L".zip";
+        netutil::WriteFileBytes(zipPath, zipResp.binary.data(), zipResp.binary.size());
+        std::wstring unpack = out.workDir + L"\\unpacked_" + std::to_wstring(bi);
+        CreateDirectoryW(unpack.c_str(), nullptr);
+        if (!ziputil::ExtractZipShell(zipPath, unpack, L"full.md", 15000)) {
+            if (ziputil::FindFileByName(unpack, L"full.md").empty()) {
+                return fail(L"解压识别结果失败");
+            }
+        }
+
+        std::wstring mdPath = ziputil::FindFileByName(unpack, L"full.md");
+        if (mdPath.empty()) return fail(L"结果中未找到 full.md");
+        std::vector<BYTE> mdBytes;
+        if (!netutil::ReadFileBytes(mdPath, mdBytes)) return fail(L"读取 full.md 失败");
+        std::string md(mdBytes.begin(), mdBytes.end());
+
+        // 图片收进结果（加 sN_ 前缀），引用同步改写
+        CollectSliceImages(unpack, bi, md, out);
+        md = RewriteSliceImageRefs(md, bi);
+        MergeSliceMarkdown(merged, md);
+
+        if (prog.cancel.IsCancelled()) return failCancel();
     }
 
-    std::wstring mdPath = ziputil::FindFileByName(unpack, L"full.md");
-    if (mdPath.empty()) {
-        out.errorMsg = L"结果中未找到 full.md";
-        netutil::DeletePathRecursive(out.workDir);
-        out.workDir.clear();
-        return false;
-    }
-
-    std::vector<BYTE> mdBytes;
-    if (!netutil::ReadFileBytes(mdPath, mdBytes)) {
-        out.errorMsg = L"读取 full.md 失败";
-        netutil::DeletePathRecursive(out.workDir);
-        out.workDir.clear();
-        return false;
-    }
-    out.markdownUtf8.assign(mdBytes.begin(), mdBytes.end());
+    out.markdownUtf8 = merged;
     out.markdownWide = netutil::Utf8ToWide(out.markdownUtf8);
-
-    // collect images from md directory
-    size_t slash = mdPath.find_last_of(L"\\/");
-    std::wstring mdDir = (slash == std::wstring::npos) ? unpack : mdPath.substr(0, slash);
-    std::wstring imgDir = mdDir + L"\\images";
-    std::vector<std::wstring> imgFiles;
-    ziputil::ListDir(imgDir, imgFiles, false);
-    if (imgFiles.empty()) {
-        // sometimes images sit next to md
-        std::vector<std::wstring> sibling;
-        ziputil::ListDir(mdDir, sibling, false);
-        for (const auto& f : sibling) {
-            std::wstring low = f;
-            for (auto& c : low) c = static_cast<wchar_t>(towlower(c));
-            if (low.size() > 4 &&
-                (low.rfind(L".png") == low.size() - 4 || low.rfind(L".jpg") == low.size() - 4 ||
-                 low.rfind(L".jpeg") == low.size() - 5 || low.rfind(L".bmp") == low.size() - 4 ||
-                 low.rfind(L".gif") == low.size() - 4 || low.rfind(L".webp") == low.size() - 5)) {
-                imgFiles.push_back(f);
-            }
-        }
-        for (const auto& f : imgFiles) {
-            ExtractImage im;
-            im.fileName = f;
-            im.relPath = f;
-            im.absPath = mdDir + L"\\" + f;
-            std::vector<BYTE> bytes;
-            if (netutil::ReadFileBytes(im.absPath, bytes)) {
-                im.pngOrRaw.assign(bytes.begin(), bytes.end());
-                DecodeImageSize(im.pngOrRaw, im.width, im.height);
-            }
-            out.images.push_back(std::move(im));
-        }
-    } else {
-        for (const auto& f : imgFiles) {
-            ExtractImage im;
-            im.fileName = f;
-            im.relPath = L"images/" + f;
-            im.absPath = imgDir + L"\\" + f;
-            std::vector<BYTE> bytes;
-            if (netutil::ReadFileBytes(im.absPath, bytes)) {
-                im.pngOrRaw.assign(bytes.begin(), bytes.end());
-                DecodeImageSize(im.pngOrRaw, im.width, im.height);
-            }
-            out.images.push_back(std::move(im));
-        }
-    }
-
     out.success = true;
     // 图片字节已全部进内存，立刻物理删除临时目录（不进回收站）
     if (!out.workDir.empty()) {
@@ -1446,12 +1552,29 @@ void RunExtractFlow(HWND owner, Document* doc) {
         return;
     }
 
+    // 有框选区域时只提取选区内容（精确控制）；无选区保持整图提取
+    std::unique_ptr<Bitmap> source;
+    {
+        int rx = 0, ry = 0, rw = 0, rh = 0;
+        if (doc->GetRegion(rx, ry, rw, rh)) {
+            const int bw = composite->GetWidth(), bh = composite->GetHeight();
+            const int cx = (std::max)(0, rx), cy = (std::max)(0, ry);
+            const int cw = (std::min)(bw - cx, rw), ch = (std::min)(bh - cy, rh);
+            if (cw > 4 && ch > 4) {
+                source = util::CropBitmap(composite.get(), cx, cy, cw, ch);
+                App::Instance().ShowStatusMessage(
+                    util::Format(L"已框选区域：只提取选区内容 %d×%d", cw, ch));
+            }
+        }
+        if (!source) source = std::move(composite);
+    }
+
     ExtractResult result;
     ProgressState prog;
     prog.status = L"正在识别";
     prog.cancelText = L"取消识别";
     std::unique_ptr<Bitmap> clone(
-        composite->Clone(0, 0, composite->GetWidth(), composite->GetHeight(), PixelFormat32bppARGB));
+        source->Clone(0, 0, source->GetWidth(), source->GetHeight(), PixelFormat32bppARGB));
     Bitmap* raw = clone.get();
 
     prog.work = [&]() {

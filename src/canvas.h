@@ -115,6 +115,8 @@ private:
     HandleId activeHandle_ = HandleId::None;
 
     void OpenTextEditor(int hitIndex);
+    // 框选区内空白处按下：抠起选区画面（原位置烙白），内容变为可拖动图片图层
+    bool BeginRegionContentMove(int rx, int ry, int rw, int rh, float ix, float iy);
 
     // double buffering
     void* bits_ = nullptr;

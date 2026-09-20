@@ -54,6 +54,8 @@ private:
         int dy = 0;
         int stickyTop = 0;
         int stickyBottom = 0;
+        // 帧内位移不一致（撕裂/重排/新消息插入）：不可拼，且不应污染锚点
+        bool unstable = false;
     };
 
     struct RatioOut {
@@ -76,6 +78,8 @@ private:
     // anchorDy：detect() 得到的锚帧位移（>0 有效），用于纯背景尾的航位推算
     int resolveAppendStart(const FrameData& frame, int stickyTop, int e,
                            double* outScore, int anchorDy) const;
+    // 追加起点统一校正：抗重复推进 + 抗跳行回退（微信式重复消息/大片空白场景）
+    int correctAppendStart(const FrameData& frame, int s, int stickyTop, int e) const;
     bool rowOnCanvasStrict(const FrameData& frame, int y, int* outCanvasY) const;
     int alignCanvasTailToFrame(const FrameData& frame, int stickyTop, int e,
                                double* outScore) const;
@@ -103,6 +107,7 @@ private:
     int gapCount_ = 0;
     int suspectSeams_ = 0;
     int skipAlignCount_ = 0;
+    int unstableStreak_ = 0;   // 连续不稳定帧计数：瞬时撕裂不污染锚点，持续变化则接受新现实
     double gapCooldownUntil_ = 0.0;
     bool capped_ = false;
     bool started_ = false;

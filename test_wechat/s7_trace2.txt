@@ -1,0 +1,423 @@
+== S7: 慢速滚动 + 高频重复消息（歧义最大化）==
+  [detect] Scrolled dy=49 stickyTop=0 stickyBottom=0
+  [align] canvasRows=480 K=28 lo=0 hi=452 bestOff=402 best=0.00 -> s=430 (e=480)
+  [appendNewFrom] s=431 e=480 gap=0 canvasRows_before=480
+  [detect] Scrolled dy=30 stickyTop=0 stickyBottom=0
+  [align] canvasRows=529 K=28 lo=0 hi=452 bestOff=422 best=0.00 -> s=450 (e=480)
+  [appendNewFrom] s=455 e=480 gap=0 canvasRows_before=529
+  [detect] Scrolled dy=44 stickyTop=0 stickyBottom=0
+  [align] canvasRows=554 K=28 lo=0 hi=452 bestOff=408 best=1.80 -> s=436 (e=480)
+  [appendNewFrom] s=437 e=480 gap=0 canvasRows_before=554
+  [detect] Scrolled dy=54 stickyTop=0 stickyBottom=0
+  [align] canvasRows=597 K=28 lo=0 hi=452 bestOff=398 best=0.00 -> s=426 (e=480)
+  [appendNewFrom] s=427 e=480 gap=0 canvasRows_before=597
+  [detect] Scrolled dy=42 stickyTop=0 stickyBottom=0
+  [align] canvasRows=650 K=28 lo=0 hi=452 bestOff=410 best=0.00 -> s=438 (e=480)
+  [appendNewFrom] s=438 e=480 gap=0 canvasRows_before=650
+  [detect] Scrolled dy=48 stickyTop=0 stickyBottom=0
+  [align] canvasRows=692 K=28 lo=0 hi=452 bestOff=404 best=0.00 -> s=432 (e=480)
+  [appendNewFrom] s=438 e=480 gap=0 canvasRows_before=692
+  [detect] Scrolled dy=35 stickyTop=0 stickyBottom=0
+  [align] reject flat tail off=416 dist=2 K=28
+  [appendNewFrom] s=453 e=480 gap=0 canvasRows_before=734
+  [detect] Scrolled dy=42 stickyTop=0 stickyBottom=0
+  [align]   cand off=132 k=0.00 ext=38.45
+  [align]   cand off=410 k=0.00 ext=21.13
+  [align] disambiguate 2 cands -> off=410 ext=21.13
+  [align] canvasRows=761 K=28 lo=0 hi=452 bestOff=410 best=0.00 -> s=438 (e=480)
+  [appendNewFrom] s=441 e=480 gap=0 canvasRows_before=761
+  [detect] Scrolled dy=48 stickyTop=0 stickyBottom=0
+  [align] reject flat tail off=404 dist=2 K=28
+  [appendNewFrom] s=433 e=480 gap=0 canvasRows_before=800
+  [detect] Scrolled dy=52 stickyTop=0 stickyBottom=0
+  [align] canvasRows=847 K=28 lo=0 hi=452 bestOff=400 best=0.00 -> s=428 (e=480)
+  [appendNewFrom] s=435 e=480 gap=0 canvasRows_before=847
+  [detect] Scrolled dy=59 stickyTop=0 stickyBottom=0
+  [align] canvasRows=892 K=28 lo=0 hi=452 bestOff=393 best=0.00 -> s=421 (e=480)
+  [appendNewFrom] s=429 e=480 gap=0 canvasRows_before=892
+  [detect] Scrolled dy=36 stickyTop=0 stickyBottom=0
+  [align] canvasRows=943 K=28 lo=0 hi=452 bestOff=416 best=0.00 -> s=444 (e=480)
+  [correct] anti-dup s 444 -> 446 (dup 2 rows to tail)
+  [appendNewFrom] s=446 e=480 gap=0 canvasRows_before=943
+  [detect] Scrolled dy=28 stickyTop=0 stickyBottom=0
+  [align] canvasRows=977 K=28 lo=0 hi=452 bestOff=424 best=0.00 -> s=452 (e=480)
+  [appendNewFrom] s=460 e=480 gap=0 canvasRows_before=977
+  [detect] Scrolled dy=58 stickyTop=0 stickyBottom=0
+  [align]   cand off=116 k=0.00 ext=98.58
+  [align]   cand off=394 k=0.00 ext=49.33
+  [align] disambiguate 2 cands -> off=394 ext=49.33
+  [align] canvasRows=997 K=28 lo=0 hi=452 bestOff=394 best=0.00 -> s=422 (e=480)
+  [correct] anti-dup s 422 -> 424 (dup 2 rows to tail)
+  [appendNewFrom] s=426 e=480 gap=0 canvasRows_before=997
+  [detect] Scrolled dy=40 stickyTop=0 stickyBottom=0
+  [align] canvasRows=1051 K=28 lo=0 hi=452 bestOff=412 best=0.00 -> s=440 (e=480)
+  [appendNewFrom] s=447 e=480 gap=0 canvasRows_before=1051
+  [detect] Scrolled dy=41 stickyTop=0 stickyBottom=0
+  [align] canvasRows=1084 K=28 lo=0 hi=452 bestOff=411 best=0.00 -> s=439 (e=480)
+  [appendNewFrom] s=445 e=480 gap=0 canvasRows_before=1084
+  [detect] Scrolled dy=60 stickyTop=0 stickyBottom=0
+  [align] canvasRows=1119 K=28 lo=0 hi=452 bestOff=392 best=0.00 -> s=420 (e=480)
+  [appendNewFrom] s=428 e=480 gap=0 canvasRows_before=1119
+  [detect] Scrolled dy=43 stickyTop=0 stickyBottom=0
+  [align] canvasRows=1171 K=28 lo=0 hi=452 bestOff=409 best=0.00 -> s=437 (e=480)
+  [correct] anti-dup s 437 -> 439 (dup 2 rows to tail)
+  [appendNewFrom] s=447 e=480 gap=0 canvasRows_before=1171
+  [detect] Scrolled dy=27 stickyTop=0 stickyBottom=0
+  [align]   cand off=424 k=0.00 ext=34.15
+  [align]   cand off=427 k=2.98 ext=35.76
+  [align] disambiguate 2 cands -> off=424 ext=34.15
+  [align] canvasRows=1204 K=28 lo=0 hi=452 bestOff=424 best=0.00 -> s=452 (e=480)
+  [appendNewFrom] s=457 e=480 gap=0 canvasRows_before=1204
+  [detect] Scrolled dy=28 stickyTop=0 stickyBottom=0
+  [align]   cand off=163 k=0.00 ext=83.79
+  [align]   cand off=424 k=0.00 ext=22.90
+  [align] disambiguate 2 cands -> off=424 ext=22.90
+  [align] canvasRows=1227 K=28 lo=0 hi=452 bestOff=424 best=0.00 -> s=452 (e=480)
+  [appendNewFrom] s=459 e=480 gap=0 canvasRows_before=1227
+  [detect] Scrolled dy=51 stickyTop=0 stickyBottom=0
+  [align]   cand off=140 k=3.98 ext=44.17
+  [align]   cand off=333 k=6.84 ext=36.78
+  [align]   cand off=401 k=3.98 ext=24.13
+  [align] disambiguate 3 cands -> off=401 ext=24.13
+  [align] canvasRows=1248 K=28 lo=0 hi=452 bestOff=401 best=3.98 -> s=429 (e=480)
+  [correct] anti-dup s 429 -> 431 (dup 2 rows to tail)
+  [appendNewFrom] s=431 e=480 gap=0 canvasRows_before=1248
+  [detect] Scrolled dy=56 stickyTop=0 stickyBottom=0
+  [align] canvasRows=1297 K=28 lo=0 hi=452 bestOff=396 best=0.00 -> s=424 (e=480)
+  [appendNewFrom] s=426 e=480 gap=0 canvasRows_before=1297
+  [detect] Scrolled dy=39 stickyTop=0 stickyBottom=0
+  [align] canvasRows=1351 K=28 lo=0 hi=452 bestOff=413 best=0.00 -> s=441 (e=480)
+  [appendNewFrom] s=449 e=480 gap=0 canvasRows_before=1351
+  [detect] Scrolled dy=39 stickyTop=0 stickyBottom=0
+  [align]   cand off=234 k=0.00 ext=15.41
+  [align]   cand off=413 k=0.00 ext=34.69
+  [align] disambiguate 2 cands -> off=234 ext=15.41
+  [align] canvasRows=1382 K=28 lo=0 hi=452 bestOff=234 best=0.00 -> s=262 (e=480)
+  [appendNewFrom] s=262 e=480 gap=0 canvasRows_before=1382
+  [detect] Scrolled dy=55 stickyTop=0 stickyBottom=0
+  [align] canvasRows=1600 K=28 lo=0 hi=452 bestOff=397 best=0.00 -> s=425 (e=480)
+  [appendNewFrom] s=426 e=480 gap=0 canvasRows_before=1600
+  [detect] Scrolled dy=29 stickyTop=0 stickyBottom=0
+  [align] canvasRows=1654 K=28 lo=0 hi=452 bestOff=422 best=0.00 -> s=450 (e=480)
+  [correct] anti-dup s 450 -> 452 (dup 2 rows to tail)
+  [appendNewFrom] s=454 e=480 gap=0 canvasRows_before=1654
+  [detect] Scrolled dy=54 stickyTop=0 stickyBottom=0
+  [align] canvasRows=1680 K=28 lo=0 hi=452 bestOff=398 best=0.47 -> s=426 (e=480)
+  [appendNewFrom] s=427 e=480 gap=0 canvasRows_before=1680
+  [detect] Scrolled dy=55 stickyTop=0 stickyBottom=0
+  [align]   cand off=24 k=0.33 ext=NA(页眉)
+  [align]   cand off=200 k=0.00 ext=34.98
+  [align]   cand off=203 k=0.33 ext=25.84
+  [align]   cand off=392 k=0.00 ext=17.73
+  [align]   cand off=395 k=0.00 ext=10.43
+  [align]   cand off=398 k=0.00 ext=18.02
+  [align]   cand off=401 k=0.00 ext=30.38
+  [align]   cand off=404 k=0.00 ext=36.61
+  [align]   cand off=407 k=0.00 ext=31.43
+  [align]   cand off=410 k=1.48 ext=26.45
+  [align] disambiguate 10 cands -> off=395 ext=10.43
+  [align] reject flat tail off=395 dist=0 K=28
+  [appendNewFrom] s=433 e=480 gap=0 canvasRows_before=1733
+  [trim] periodic skip B=64 gap=192
+  [detect] Scrolled dy=58 stickyTop=0 stickyBottom=0
+  [align]   cand off=8 k=0.00 ext=NA(页眉)
+  [align]   cand off=187 k=0.00 ext=8.17
+  [align]   cand off=393 k=0.00 ext=1.03
+  [align] disambiguate 3 cands -> off=393 ext=1.03
+  [align] canvasRows=1780 K=28 lo=0 hi=452 bestOff=393 best=0.00 -> s=421 (e=480)
+  [appendNewFrom] s=423 e=480 gap=0 canvasRows_before=1780
+  [detect] Scrolled dy=37 stickyTop=0 stickyBottom=0
+  [align] canvasRows=1837 K=28 lo=0 hi=452 bestOff=415 best=0.00 -> s=443 (e=480)
+  [appendNewFrom] s=451 e=480 gap=0 canvasRows_before=1837
+  [detect] Scrolled dy=55 stickyTop=0 stickyBottom=0
+  [align] canvasRows=1866 K=28 lo=0 hi=452 bestOff=397 best=0.00 -> s=425 (e=480)
+  [appendNewFrom] s=432 e=480 gap=0 canvasRows_before=1866
+  [detect] Scrolled dy=45 stickyTop=0 stickyBottom=0
+  [align] canvasRows=1914 K=28 lo=0 hi=452 bestOff=407 best=0.00 -> s=435 (e=480)
+  [appendNewFrom] s=435 e=480 gap=0 canvasRows_before=1914
+  [detect] Scrolled dy=41 stickyTop=0 stickyBottom=0
+  [align]   cand off=286 k=1.53 ext=52.68
+  [align]   cand off=411 k=0.00 ext=0.60
+  [align] disambiguate 2 cands -> off=411 ext=0.60
+  [align] reject flat tail off=411 dist=5 K=28
+  [appendNewFrom] s=447 e=480 gap=0 canvasRows_before=1959
+  [detect] Scrolled dy=53 stickyTop=0 stickyBottom=0
+  [align]   cand off=147 k=0.00 ext=42.58
+  [align]   cand off=398 k=0.00 ext=14.01
+  [align] disambiguate 2 cands -> off=398 ext=14.01
+  [align] canvasRows=1992 K=28 lo=0 hi=452 bestOff=398 best=0.00 -> s=426 (e=480)
+  [appendNewFrom] s=429 e=480 gap=0 canvasRows_before=1992
+  [detect] Scrolled dy=31 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2043 K=28 lo=0 hi=452 bestOff=421 best=0.00 -> s=449 (e=480)
+  [appendNewFrom] s=449 e=480 gap=0 canvasRows_before=2043
+  [detect] Scrolled dy=42 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2074 K=28 lo=0 hi=452 bestOff=410 best=0.00 -> s=438 (e=480)
+  [appendNewFrom] s=446 e=480 gap=0 canvasRows_before=2074
+  [detect] Scrolled dy=56 stickyTop=0 stickyBottom=0
+  [align]   cand off=245 k=2.75 ext=64.54
+  [align]   cand off=396 k=0.00 ext=47.49
+  [align] disambiguate 2 cands -> off=396 ext=47.49
+  [align] reject flat tail off=396 dist=5 K=28
+  [appendNewFrom] s=425 e=480 gap=0 canvasRows_before=2108
+  [detect] Scrolled dy=49 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2163 K=28 lo=0 hi=452 bestOff=403 best=0.00 -> s=431 (e=480)
+  [appendNewFrom] s=431 e=480 gap=0 canvasRows_before=2163
+  [detect] Scrolled dy=47 stickyTop=0 stickyBottom=0
+  [align]   cand off=12 k=2.64 ext=NA(页眉)
+  [align]   cand off=15 k=2.64 ext=NA(页眉)
+  [align]   cand off=137 k=2.64 ext=111.65
+  [align]   cand off=140 k=2.64 ext=105.33
+  [align]   cand off=146 k=0.00 ext=97.48
+  [align]   cand off=283 k=2.64 ext=137.94
+  [align]   cand off=286 k=2.64 ext=131.94
+  [align]   cand off=289 k=2.64 ext=125.94
+  [align]   cand off=292 k=2.64 ext=127.48
+  [align]   cand off=297 k=1.57 ext=126.87
+  [align]   cand off=399 k=2.64 ext=72.56
+  [align]   cand off=405 k=0.00 ext=0.00
+  [align] disambiguate 12 cands -> off=405 ext=0.00
+  [align] reject flat tail off=405 dist=2 K=28
+  [appendNewFrom] s=439 e=480 gap=0 canvasRows_before=2212
+  [detect] Scrolled dy=41 stickyTop=0 stickyBottom=0
+  [align]   cand off=152 k=0.00 ext=19.47
+  [align]   cand off=411 k=0.00 ext=7.79
+  [align] disambiguate 2 cands -> off=411 ext=7.79
+  [align] canvasRows=2253 K=28 lo=0 hi=452 bestOff=411 best=0.00 -> s=439 (e=480)
+  [appendNewFrom] s=440 e=480 gap=0 canvasRows_before=2253
+  [detect] Scrolled dy=31 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2293 K=28 lo=0 hi=452 bestOff=421 best=0.00 -> s=449 (e=480)
+  [appendNewFrom] s=449 e=480 gap=0 canvasRows_before=2293
+  [detect] Scrolled dy=53 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2324 K=28 lo=0 hi=452 bestOff=399 best=0.00 -> s=427 (e=480)
+  [correct] anti-dup s 427 -> 429 (dup 2 rows to tail)
+  [appendNewFrom] s=434 e=480 gap=0 canvasRows_before=2324
+  [detect] Scrolled dy=32 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2370 K=28 lo=0 hi=452 bestOff=419 best=0.00 -> s=447 (e=480)
+  [appendNewFrom] s=447 e=480 gap=0 canvasRows_before=2370
+  [detect] Scrolled dy=59 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2403 K=28 lo=0 hi=452 bestOff=392 best=0.00 -> s=420 (e=480)
+  [appendNewFrom] s=427 e=480 gap=0 canvasRows_before=2403
+  [detect] Scrolled dy=30 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2456 K=28 lo=0 hi=452 bestOff=422 best=0.00 -> s=450 (e=480)
+  [appendNewFrom] s=457 e=480 gap=0 canvasRows_before=2456
+  [detect] Scrolled dy=53 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2479 K=28 lo=0 hi=452 bestOff=399 best=10.71 -> s=427 (e=480)
+  [appendNewFrom] s=427 e=480 gap=0 canvasRows_before=2479
+  [detect] Scrolled dy=40 stickyTop=0 stickyBottom=0
+  [align]   cand off=57 k=0.00 ext=NA(页眉)
+  [align]   cand off=60 k=0.16 ext=NA(页眉)
+  [align]   cand off=63 k=2.64 ext=NA(页眉)
+  [align]   cand off=217 k=0.00 ext=54.31
+  [align]   cand off=220 k=0.00 ext=46.18
+  [align]   cand off=401 k=0.00 ext=45.94
+  [align]   cand off=404 k=0.00 ext=31.82
+  [align]   cand off=407 k=0.00 ext=29.49
+  [align]   cand off=410 k=0.00 ext=22.99
+  [align]   cand off=413 k=0.00 ext=29.76
+  [align]   cand off=416 k=2.29 ext=37.44
+  [align] disambiguate 11 cands -> off=410 ext=22.99
+  [align] reject flat tail off=410 dist=0 K=28
+  [appendNewFrom] s=441 e=480 gap=0 canvasRows_before=2532
+  [detect] Scrolled dy=47 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2571 K=28 lo=0 hi=452 bestOff=405 best=0.00 -> s=433 (e=480)
+  [appendNewFrom] s=434 e=480 gap=0 canvasRows_before=2571
+  [detect] Scrolled dy=34 stickyTop=0 stickyBottom=0
+  [align] reject flat tail off=418 dist=5 K=28
+  [correct] anti-dup s 446 -> 448 (dup 2 rows to tail)
+  [appendNewFrom] s=455 e=480 gap=0 canvasRows_before=2617
+  [detect] Scrolled dy=52 stickyTop=0 stickyBottom=0
+  [align]   cand off=157 k=0.00 ext=84.49
+  [align]   cand off=400 k=0.00 ext=53.46
+  [align] disambiguate 2 cands -> off=400 ext=53.46
+  [align] canvasRows=2642 K=28 lo=0 hi=452 bestOff=400 best=0.00 -> s=428 (e=480)
+  [correct] anti-dup s 428 -> 430 (dup 2 rows to tail)
+  [appendNewFrom] s=433 e=480 gap=0 canvasRows_before=2642
+  [detect] Scrolled dy=35 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2689 K=28 lo=0 hi=452 bestOff=417 best=0.00 -> s=445 (e=480)
+  [appendNewFrom] s=446 e=480 gap=0 canvasRows_before=2689
+  [detect] Scrolled dy=26 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2723 K=28 lo=0 hi=452 bestOff=426 best=0.00 -> s=454 (e=480)
+  [appendNewFrom] s=457 e=480 gap=0 canvasRows_before=2723
+  [detect] Scrolled dy=51 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2746 K=28 lo=0 hi=452 bestOff=401 best=10.81 -> s=429 (e=480)
+  [correct] anti-dup s 429 -> 431 (dup 2 rows to tail)
+  [appendNewFrom] s=431 e=480 gap=0 canvasRows_before=2746
+  [detect] Scrolled dy=47 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2795 K=28 lo=0 hi=452 bestOff=405 best=0.00 -> s=433 (e=480)
+  [correct] anti-dup s 433 -> 435 (dup 2 rows to tail)
+  [appendNewFrom] s=435 e=480 gap=0 canvasRows_before=2795
+  [detect] Scrolled dy=26 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2840 K=28 lo=0 hi=452 bestOff=426 best=0.00 -> s=454 (e=480)
+  [correct] anti-dup s 454 -> 456 (dup 2 rows to tail)
+  [appendNewFrom] s=457 e=480 gap=0 canvasRows_before=2840
+  [detect] Scrolled dy=42 stickyTop=0 stickyBottom=0
+  [align] reject flat tail off=410 dist=5 K=28
+  [correct] anti-dup s 438 -> 440 (dup 2 rows to tail)
+  [appendNewFrom] s=448 e=480 gap=0 canvasRows_before=2863
+  [detect] Scrolled dy=46 stickyTop=0 stickyBottom=0
+  [align]   cand off=115 k=0.00 ext=75.27
+  [align]   cand off=406 k=0.00 ext=47.56
+  [align] disambiguate 2 cands -> off=406 ext=47.56
+  [align] canvasRows=2895 K=28 lo=0 hi=452 bestOff=406 best=0.00 -> s=434 (e=480)
+  [appendNewFrom] s=439 e=480 gap=0 canvasRows_before=2895
+  [detect] Scrolled dy=40 stickyTop=0 stickyBottom=0
+  [align]   cand off=121 k=0.00 ext=9.78
+  [align]   cand off=412 k=0.00 ext=8.16
+  [align] disambiguate 2 cands -> off=412 ext=8.16
+  [align] canvasRows=2936 K=28 lo=0 hi=452 bestOff=412 best=0.00 -> s=440 (e=480)
+  [correct] anti-dup s 440 -> 442 (dup 2 rows to tail)
+  [appendNewFrom] s=446 e=480 gap=0 canvasRows_before=2936
+  [detect] Scrolled dy=57 stickyTop=0 stickyBottom=0
+  [align] canvasRows=2970 K=28 lo=0 hi=452 bestOff=395 best=0.00 -> s=423 (e=480)
+  [appendNewFrom] s=423 e=480 gap=0 canvasRows_before=2970
+  [detect] Scrolled dy=41 stickyTop=0 stickyBottom=0
+  [align]   cand off=411 k=0.00 ext=0.00
+  [align]   cand off=414 k=0.90 ext=23.08
+  [align]   cand off=417 k=1.81 ext=46.07
+  [align]   cand off=420 k=2.71 ext=54.35
+  [align] disambiguate 4 cands -> off=411 ext=0.00
+  [align] reject flat tail off=411 dist=0 K=28
+  [appendNewFrom] s=447 e=480 gap=0 canvasRows_before=3027
+  [detect] Scrolled dy=48 stickyTop=0 stickyBottom=0
+  [align] canvasRows=3060 K=28 lo=0 hi=452 bestOff=404 best=0.00 -> s=432 (e=480)
+  [appendNewFrom] s=438 e=480 gap=0 canvasRows_before=3060
+  [detect] Scrolled dy=59 stickyTop=0 stickyBottom=0
+  [align] reject flat tail off=393 dist=2 K=28
+  [appendNewFrom] s=429 e=480 gap=0 canvasRows_before=3102
+  [detect] Scrolled dy=33 stickyTop=0 stickyBottom=0
+  [align]   cand off=156 k=0.00 ext=15.68
+  [align]   cand off=418 k=0.00 ext=16.72
+  [align] disambiguate 2 cands -> off=156 ext=15.68
+  [align] canvasRows=3153 K=28 lo=0 hi=452 bestOff=156 best=0.00 -> s=184 (e=480)
+  [appendNewFrom] s=184 e=480 gap=0 canvasRows_before=3153
+  [detect] Scrolled dy=30 stickyTop=0 stickyBottom=0
+  [align]   cand off=89 k=1.05 ext=58.11
+  [align]   cand off=154 k=0.36 ext=12.77
+  [align]   cand off=261 k=0.79 ext=35.09
+  [align]   cand off=351 k=1.05 ext=51.74
+  [align]   cand off=422 k=0.00 ext=0.00
+  [align] disambiguate 5 cands -> off=422 ext=0.00
+  [align] reject flat tail off=422 dist=3 K=28
+  [correct] anti-dup s 450 -> 452 (dup 2 rows to tail)
+  [appendNewFrom] s=453 e=480 gap=0 canvasRows_before=3449
+  [detect] Scrolled dy=27 stickyTop=0 stickyBottom=0
+  [align] canvasRows=3476 K=28 lo=0 hi=452 bestOff=425 best=0.00 -> s=453 (e=480)
+  [appendNewFrom] s=458 e=480 gap=0 canvasRows_before=3476
+  [detect] Scrolled dy=28 stickyTop=0 stickyBottom=0
+  [align] canvasRows=3498 K=28 lo=0 hi=452 bestOff=424 best=11.62 -> s=452 (e=480)
+  [appendNewFrom] s=453 e=480 gap=0 canvasRows_before=3498
+  [detect] Scrolled dy=50 stickyTop=0 stickyBottom=0
+  [align]   cand off=134 k=1.99 ext=43.61
+  [align]   cand off=402 k=0.00 ext=40.22
+  [align]   cand off=405 k=2.72 ext=57.87
+  [align] disambiguate 3 cands -> off=402 ext=40.22
+  [align] reject flat tail off=402 dist=1 K=28
+  [appendNewFrom] s=438 e=480 gap=0 canvasRows_before=3525
+  [detect] Scrolled dy=46 stickyTop=0 stickyBottom=0
+  [align] canvasRows=3567 K=28 lo=0 hi=452 bestOff=406 best=0.00 -> s=434 (e=480)
+  [appendNewFrom] s=434 e=480 gap=0 canvasRows_before=3567
+  [detect] Scrolled dy=49 stickyTop=0 stickyBottom=0
+  [align] canvasRows=3613 K=28 lo=0 hi=452 bestOff=403 best=0.00 -> s=431 (e=480)
+  [appendNewFrom] s=438 e=480 gap=0 canvasRows_before=3613
+  [detect] Scrolled dy=54 stickyTop=0 stickyBottom=0
+  [align]   cand off=101 k=0.00 ext=137.59
+  [align]   cand off=171 k=2.83 ext=122.11
+  [align]   cand off=398 k=0.00 ext=42.97
+  [align] disambiguate 3 cands -> off=398 ext=42.97
+  [align] canvasRows=3655 K=28 lo=0 hi=452 bestOff=398 best=0.00 -> s=426 (e=480)
+  [correct] anti-dup s 426 -> 428 (dup 2 rows to tail)
+  [appendNewFrom] s=428 e=480 gap=0 canvasRows_before=3655
+  [detect] Scrolled dy=43 stickyTop=0 stickyBottom=0
+  [align] canvasRows=3707 K=28 lo=0 hi=452 bestOff=409 best=0.00 -> s=437 (e=480)
+  [correct] anti-dup s 437 -> 439 (dup 2 rows to tail)
+  [appendNewFrom] s=439 e=480 gap=0 canvasRows_before=3707
+  [detect] Scrolled dy=51 stickyTop=0 stickyBottom=0
+  [align] canvasRows=3748 K=28 lo=0 hi=452 bestOff=401 best=0.00 -> s=429 (e=480)
+  [appendNewFrom] s=436 e=480 gap=0 canvasRows_before=3748
+  [detect] Scrolled dy=32 stickyTop=0 stickyBottom=0
+  [align] reject flat tail off=420 dist=6 K=28
+  [appendNewFrom] s=455 e=480 gap=0 canvasRows_before=3792
+  [detect] Scrolled dy=44 stickyTop=0 stickyBottom=0
+  [align] canvasRows=3817 K=28 lo=0 hi=452 bestOff=408 best=0.00 -> s=436 (e=480)
+  [appendNewFrom] s=436 e=480 gap=0 canvasRows_before=3817
+  [detect] Scrolled dy=25 stickyTop=0 stickyBottom=0
+  [align] canvasRows=3861 K=28 lo=0 hi=452 bestOff=427 best=0.00 -> s=455 (e=480)
+  [appendNewFrom] s=457 e=480 gap=0 canvasRows_before=3861
+  [detect] Scrolled dy=27 stickyTop=0 stickyBottom=0
+  [align] canvasRows=3884 K=28 lo=0 hi=452 bestOff=425 best=1.80 -> s=453 (e=480)
+  [correct] anti-dup s 453 -> 455 (dup 2 rows to tail)
+  [appendNewFrom] s=456 e=480 gap=0 canvasRows_before=3884
+  [detect] Scrolled dy=40 stickyTop=0 stickyBottom=0
+  [align]   cand off=160 k=0.00 ext=49.43
+  [align]   cand off=411 k=0.00 ext=27.50
+  [align] disambiguate 2 cands -> off=411 ext=27.50
+  [align] canvasRows=3908 K=28 lo=0 hi=452 bestOff=411 best=0.00 -> s=439 (e=480)
+  [appendNewFrom] s=439 e=480 gap=0 canvasRows_before=3908
+  [detect] Scrolled dy=46 stickyTop=0 stickyBottom=0
+  [align] canvasRows=3949 K=28 lo=0 hi=452 bestOff=406 best=0.00 -> s=434 (e=480)
+  [appendNewFrom] s=434 e=480 gap=0 canvasRows_before=3949
+  [detect] Scrolled dy=53 stickyTop=0 stickyBottom=0
+  [align] canvasRows=3995 K=28 lo=0 hi=452 bestOff=399 best=0.00 -> s=427 (e=480)
+  [appendNewFrom] s=427 e=480 gap=0 canvasRows_before=3995
+  [detect] Scrolled dy=25 stickyTop=0 stickyBottom=0
+  [align]   cand off=25 k=1.80 ext=NA(页眉)
+  [align]   cand off=276 k=1.80 ext=49.89
+  [align]   cand off=427 k=0.00 ext=0.00
+  [align] disambiguate 3 cands -> off=427 ext=0.00
+  [align] canvasRows=4048 K=28 lo=0 hi=452 bestOff=427 best=0.00 -> s=455 (e=480)
+  [correct] anti-dup s 455 -> 457 (dup 2 rows to tail)
+  [appendNewFrom] s=462 e=480 gap=0 canvasRows_before=4048
+  [detect] Scrolled dy=46 stickyTop=0 stickyBottom=0
+  [align]   cand off=0 k=12.49 ext=NA(页眉)
+  [align]   cand off=4 k=9.95 ext=NA(页眉)
+  [align]   cand off=248 k=10.42 ext=40.85
+  [align]   cand off=251 k=12.49 ext=45.72
+  [align]   cand off=399 k=10.42 ext=3.04
+  [align]   cand off=402 k=12.49 ext=16.15
+  [align]   cand off=406 k=9.95 ext=33.25
+  [align] disambiguate 7 cands -> off=399 ext=3.04
+  [align] canvasRows=4066 K=28 lo=0 hi=452 bestOff=399 best=9.95 -> s=427 (e=480)
+  [appendNewFrom] s=427 e=480 gap=0 canvasRows_before=4066
+  [detect] Scrolled dy=29 stickyTop=0 stickyBottom=0
+  [align] canvasRows=4119 K=28 lo=0 hi=452 bestOff=423 best=0.00 -> s=451 (e=480)
+  [appendNewFrom] s=451 e=480 gap=0 canvasRows_before=4119
+  [detect] Scrolled dy=58 stickyTop=0 stickyBottom=0
+  [align] canvasRows=4148 K=28 lo=0 hi=452 bestOff=394 best=0.00 -> s=422 (e=480)
+  [correct] anti-dup s 422 -> 424 (dup 2 rows to tail)
+  [appendNewFrom] s=425 e=480 gap=0 canvasRows_before=4148
+  [detect] Scrolled dy=41 stickyTop=0 stickyBottom=0
+  [align] canvasRows=4203 K=28 lo=0 hi=452 bestOff=411 best=0.00 -> s=439 (e=480)
+  [correct] anti-dup s 439 -> 441 (dup 2 rows to tail)
+  [appendNewFrom] s=442 e=480 gap=0 canvasRows_before=4203
+  [detect] Scrolled dy=36 stickyTop=0 stickyBottom=0
+  [align] canvasRows=4241 K=28 lo=0 hi=452 bestOff=416 best=0.00 -> s=444 (e=480)
+  [appendNewFrom] s=452 e=480 gap=0 canvasRows_before=4241
+  [detect] Scrolled dy=31 stickyTop=0 stickyBottom=0
+  [align]   cand off=40 k=0.00 ext=NA(页眉)
+  [align]   cand off=191 k=0.00 ext=26.76
+  [align]   cand off=421 k=0.00 ext=28.80
+  [align] disambiguate 3 cands -> off=191 ext=26.76
+  [align] canvasRows=4269 K=28 lo=0 hi=452 bestOff=191 best=0.00 -> s=219 (e=480)
+  [appendNewFrom] s=221 e=480 gap=0 canvasRows_before=4269
+  [detect] Scrolled dy=19 stickyTop=0 stickyBottom=0
+  [align]   cand off=203 k=0.00 ext=11.23
+  [align]   cand off=433 k=0.00 ext=0.00
+  [align] disambiguate 2 cands -> off=433 ext=0.00
+  [align] canvasRows=4528 K=28 lo=0 hi=452 bestOff=433 best=0.00 -> s=461 (e=480)
+  [appendNewFrom] s=469 e=480 gap=0 canvasRows_before=4528
+  [align]   cand off=214 k=0.00 ext=6.45
+  [align]   cand off=217 k=2.74 ext=14.69
+  [align]   cand off=444 k=0.00 ext=0.00
+  [align]   cand off=447 k=0.00 ext=9.31
+  [align]   cand off=450 k=0.00 ext=18.62
+  [align] disambiguate 5 cands -> off=444 ext=0.00
+  [align] reject flat tail off=444 dist=0 K=28
+  [dup] out[1382..1560] 回退至 docY=1314（高水位 1492，块内 179 行）
+  [dup] out[3153..3414] 回退至 docY=2973（高水位 3234，块内 262 行）
+  [dup] out[4066..4072] 回退至 docY=3933（高水位 3939，块内 7 行）
+  [dup] out[4269..4496] 回退至 docY=3922（高水位 4149，块内 228 行）
+  rows=4539 dupBlocks=4 dupRows=676 missing=337 maxDoc=4199 (docH=4200) gaps=0 suspects=0
+FAIL: S7 no duplicated blocks
+PASS: S7 coverage reaches doc tail
+
+HAS FAILURES (1 failed)

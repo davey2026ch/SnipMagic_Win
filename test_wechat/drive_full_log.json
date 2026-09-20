@@ -1,0 +1,50 @@
+{
+ "steps": [
+  {
+   "name": "launch",
+   "data": 15996,
+   "t": 1789876802.8611217
+  },
+  {
+   "name": "main_window",
+   "data": {
+    "hwnd": 3539848,
+    "title": "截图工具 1.4.0",
+    "cls": "ScreenshotToolMainWindow",
+    "rect": [
+     920,
+     350,
+     2920,
+     1750
+    ],
+    "visible": true
+   },
+   "t": 1789876803.1720698
+  },
+  {
+   "name": "wechat_ready",
+   "data": [
+    -85,
+    394,
+    1998,
+    1909
+   ],
+   "t": 1789876805.049518
+  },
+  {
+   "name": "overlay_shot",
+   "data": null,
+   "t": 1789876807.429256
+  },
+  {
+   "name": "bar",
+   "data": [],
+   "t": 1789876809.3051434
+  },
+  {
+   "name": "error",
+   "data": "RuntimeError('long capture bar not found')",
+   "t": 1789876810.2403493
+  }
+ ]
+}
