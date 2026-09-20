@@ -744,7 +744,8 @@ void ExportExcel(HWND owner, const ExtractResult& r) {
     // 按原文顺序：先在对应行放入图片，再写去掉标签后的文字
     std::vector<std::vector<std::string>> rows;
     std::vector<ziputil::XlsxImage> imgs;
-    std::string md = r.markdownUtf8;
+    // HTML 表格（<table><tr><td>...）先展开成按 '\x01' 分列的行，避免代码进 Excel
+    std::string md = ziputil::ExpandHtmlTablesToDelim(r.markdownUtf8);
     size_t i = 0;
     int rowIdx = 0;
     while (i <= md.size()) {
@@ -787,7 +788,12 @@ void ExportExcel(HWND owner, const ExtractResult& r) {
 
         // 2) 再去掉 image 代码，本行文字写入表格（纯图片行留空占位，保持位置）
         std::string text = StripImagesFromLine(line);
-        rows.push_back({text});
+        if (text.find('\x01') != std::string::npos) {
+            // HTML 表格展开行 → 拆成多列写入，成为真正的单元格
+            rows.push_back(ziputil::SplitTableDelimRow(text));
+        } else {
+            rows.push_back({text});
+        }
         rowIdx++;
         if (nl >= md.size()) break;
         i = nl + 1;

@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(test_export CXX)
+add_executable(test_export test_export.cpp)
+target_compile_options(test_export PRIVATE /utf-8)
+target_include_directories(test_export PRIVATE ../src)
+target_link_libraries(test_export PRIVATE gdiplus)

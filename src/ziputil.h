@@ -311,6 +311,212 @@ inline bool BitmapToPngBytes(Gdiplus::Bitmap* bmp, std::string& outPng) {
     return !outPng.empty();
 }
 
+// ---- HTML 表格解析：MinerU 返回的表格是 <table><tr><td>... 的 HTML 代码，
+// 导出 Word/Excel 前先解析成行列结构，避免把代码当文字写进文档 ----
+
+// 大小写不敏感地判断 s 从 pos 开始是否为标签 tag（tag 需含 '<'，且后跟 '>'、'/' 或空白）
+inline bool HtmlTagStartsAt(const std::string& s, size_t pos, const char* tag) {
+    size_t n = 0;
+    while (tag[n]) {
+        char c = tag[n];
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        char sc = s[pos + n];
+        if (sc >= 'A' && sc <= 'Z') sc = static_cast<char>(sc - 'A' + 'a');
+        if (pos + n >= s.size() || sc != c) return false;
+        ++n;
+    }
+    if (pos + n >= s.size()) return false;
+    char next = s[pos + n];
+    return next == '>' || next == '/' || next == ' ' || next == '\t' || next == '\r' || next == '\n';
+}
+
+inline void AppendCodepointUtf8(std::string& o, unsigned cp) {
+    if (cp < 0x80) {
+        o.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+        o.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        o.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        o.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        o.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        o.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        o.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        o.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        o.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        o.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
+
+// 还原 HTML 实体：&amp; &lt; &gt; &quot; &apos; &#39; &nbsp; 以及 &#123; / &#x1F;
+inline std::string HtmlEntityUnescape(const std::string& s) {
+    std::string o;
+    o.reserve(s.size());
+    for (size_t i = 0; i < s.size();) {
+        if (s[i] == '&') {
+            size_t sc = s.find(';', i);
+            if (sc != std::string::npos && sc > i + 1 && sc - i <= 10) {
+                std::string e = s.substr(i + 1, sc - i - 1);
+                bool hit = true;
+                if (e == "amp") o += '&';
+                else if (e == "lt") o += '<';
+                else if (e == "gt") o += '>';
+                else if (e == "quot") o += '"';
+                else if (e == "apos" || e == "#39") o += '\'';
+                else if (e == "nbsp") o += ' ';
+                else if (e == "middot") o += '\xC2\xB7';
+                else if (!e.empty() && e[0] == '#') {
+                    hit = false;
+                    unsigned cp = 0;
+                    bool ok = true;
+                    if (e.size() > 2 && (e[1] == 'x' || e[1] == 'X')) {
+                        for (size_t k = 2; k < e.size(); ++k) {
+                            char c = e[k];
+                            int d = (c >= '0' && c <= '9') ? c - '0'
+                                  : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                                  : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+                            if (d < 0) { ok = false; break; }
+                            cp = cp * 16 + static_cast<unsigned>(d);
+                        }
+                    } else {
+                        for (size_t k = 1; k < e.size(); ++k) {
+                            char c = e[k];
+                            if (c < '0' || c > '9') { ok = false; break; }
+                            cp = cp * 10 + static_cast<unsigned>(c - '0');
+                        }
+                    }
+                    if (ok && cp > 0 && cp < 0x110000) {
+                        AppendCodepointUtf8(o, cp);
+                        hit = true;
+                    }
+                } else {
+                    hit = false;
+                }
+                if (hit) { i = sc + 1; continue; }
+            }
+        }
+        o.push_back(s[i++]);
+    }
+    return o;
+}
+
+// 去掉所有 <...> 标签只留文字（<br> 变空格），再还原实体、去首尾空白
+inline std::string HtmlCellText(const std::string& s) {
+    std::string o;
+    o.reserve(s.size());
+    bool inTag = false;
+    for (size_t i = 0; i < s.size();) {
+        char c = s[i];
+        if (inTag) {
+            if (c == '>') inTag = false;
+            ++i;
+        } else if (c == '<') {
+            if (HtmlTagStartsAt(s, i, "<br")) o.push_back(' ');
+            inTag = true;
+            ++i;
+        } else {
+            o.push_back(c);
+            ++i;
+        }
+    }
+    std::string t = HtmlEntityUnescape(o);
+    size_t b = t.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return "";
+    size_t e = t.find_last_not_of(" \t\r\n");
+    return t.substr(b, e - b + 1);
+}
+
+// 把 markdown 里的每个 <table>...</table> 展开成若干行，
+// 每行是一个表格行，单元格之间用 '\x01' 分隔（后续按此拆成多列）
+inline std::string ExpandHtmlTablesToDelim(const std::string& md) {
+    const char kDelim = '\x01';
+    bool changed = false;
+    std::string out;
+    out.reserve(md.size() + 256);
+    size_t i = 0;
+    while (i < md.size()) {
+        if (md[i] == '<' && HtmlTagStartsAt(md, i, "<table")) {
+            size_t close = std::string::npos;
+            for (size_t j = i + 6; j + 7 < md.size(); ++j) {
+                if (md[j] == '<' && HtmlTagStartsAt(md, j, "</table")) { close = j; break; }
+            }
+            if (close == std::string::npos) { out.push_back(md[i++]); continue; }
+            size_t closeEnd = close;
+            while (closeEnd < md.size() && md[closeEnd] != '>') ++closeEnd;
+            if (closeEnd < md.size()) ++closeEnd;
+
+            std::string tbl = md.substr(i, closeEnd - i);
+            std::vector<std::vector<std::string>> rows;
+            size_t p = 0;
+            while (p < tbl.size()) {
+                if (tbl[p] == '<' && HtmlTagStartsAt(tbl, p, "<tr")) {
+                    size_t re = tbl.size();
+                    for (size_t j = p + 3; j + 4 < tbl.size(); ++j) {
+                        if (tbl[j] == '<' && HtmlTagStartsAt(tbl, j, "</tr")) { re = j; break; }
+                    }
+                    std::string row = tbl.substr(p, re - p);
+                    std::vector<std::string> cells;
+                    size_t q = 0;
+                    while (q < row.size()) {
+                        if (row[q] == '<' &&
+                            (HtmlTagStartsAt(row, q, "<td") || HtmlTagStartsAt(row, q, "<th"))) {
+                            size_t ce = row.size();
+                            for (size_t j = q + 3; j + 4 < row.size(); ++j) {
+                                if (row[j] == '<' &&
+                                    (HtmlTagStartsAt(row, j, "</td") || HtmlTagStartsAt(row, j, "</th"))) {
+                                    ce = j;
+                                    break;
+                                }
+                            }
+                            size_t gs = row.find('>', q);
+                            size_t cs = (gs == std::string::npos || gs >= ce) ? q : gs + 1;
+                            cells.push_back(HtmlCellText(row.substr(cs, ce - cs)));
+                            q = ce;
+                        } else {
+                            ++q;
+                        }
+                    }
+                    if (!cells.empty()) rows.push_back(std::move(cells));
+                    p = re;
+                } else {
+                    ++p;
+                }
+            }
+            if (rows.empty()) { out.push_back(md[i++]); continue; }
+            changed = true;
+            for (const auto& r : rows) {
+                std::string line;
+                for (size_t k = 0; k < r.size(); ++k) {
+                    if (k) line.push_back(kDelim);
+                    line += r[k];
+                }
+                out += "\n" + line;
+            }
+            out += "\n";
+            i = closeEnd;
+        } else {
+            out.push_back(md[i++]);
+        }
+    }
+    return changed ? out : md;
+}
+
+// 把 '\x01' 分隔的一行拆成多个单元格
+inline std::vector<std::string> SplitTableDelimRow(const std::string& line) {
+    std::vector<std::string> cells;
+    std::string cur;
+    for (char c : line) {
+        if (c == '\x01') {
+            cells.push_back(cur);
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    cells.push_back(cur);
+    return cells;
+}
+
 struct XlsxImage {
     std::string name; // media file name, keep extension
     std::string data;
@@ -696,7 +902,7 @@ inline bool ExportDocx(const std::wstring& path,
         body += "<w:p><w:r><w:t xml:space=\"preserve\">" + DocxXmlEscape(plain) + "</w:t></w:r></w:p>";
     };
 
-    std::string src = markdownUtf8;
+    std::string src = ExpandHtmlTablesToDelim(markdownUtf8);
     std::string norm;
     for (size_t i = 0; i < src.size(); ++i) {
         if (src[i] == '\r') {
@@ -705,6 +911,50 @@ inline bool ExportDocx(const std::wstring& path,
         } else norm.push_back(src[i]);
     }
 
+    // 待汇总的表格行（每行若干个 '\x01' 分隔的单元格）
+    std::vector<std::vector<std::string>> pendingTable;
+    auto flushTable = [&]() {
+        if (pendingTable.empty()) return;
+        size_t maxCols = 0;
+        for (const auto& r : pendingTable) maxCols = (std::max)(maxCols, r.size());
+        if (maxCols == 0) { pendingTable.clear(); return; }
+        int gridW = (std::max)(500, 9026 / static_cast<int>(maxCols));
+        std::string tbl = "<w:tbl><w:tblPr>"
+            "<w:tblW w:w=\"0\" w:type=\"auto\"/>"
+            "<w:tblBorders>"
+            "<w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>"
+            "<w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>"
+            "<w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>"
+            "<w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>"
+            "<w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>"
+            "<w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>"
+            "</w:tblBorders>"
+            "<w:tblLayout w:type=\"fixed\"/>"
+            "</w:tblPr><w:tblGrid>";
+        for (size_t c = 0; c < maxCols; ++c)
+            tbl += "<w:gridCol w:w=\"" + std::to_string(gridW) + "\"/>";
+        tbl += "</w:tblGrid>";
+        for (const auto& r : pendingTable) {
+            tbl += "<w:tr>";
+            for (size_t c = 0; c < maxCols; ++c) {
+                std::string cell = c < r.size() ? r[c] : "";
+                tbl += "<w:tc><w:tcPr><w:tcW w:w=\"" + std::to_string(gridW) +
+                       "\" w:type=\"dxa\"/></w:tcPr>";
+                if (cell.empty()) {
+                    tbl += "<w:p/>";
+                } else {
+                    tbl += "<w:p><w:r><w:t xml:space=\"preserve\">" +
+                           DocxXmlEscape(cell) + "</w:t></w:r></w:p>";
+                }
+                tbl += "</w:tc>";
+            }
+            tbl += "</w:tr>";
+        }
+        tbl += "</w:tbl><w:p/>";
+        body += tbl;
+        pendingTable.clear();
+    };
+
     // 图片按 md 原文顺序插入：先落到对应行位置，正文不输出 ![...] 标签
     size_t i = 0;
     while (i <= norm.size()) {
@@ -712,6 +962,14 @@ inline bool ExportDocx(const std::wstring& path,
         if (nl == std::string::npos) nl = norm.size();
         std::string line = norm.substr(i, nl - i);
         i = nl + (nl < norm.size() ? 1 : 0);
+
+        // 表格行：攒起来，遇到非表格行或文末时输出真正的 Word 表格
+        if (line.find('\x01') != std::string::npos) {
+            pendingTable.push_back(SplitTableDelimRow(line));
+            if (nl >= norm.size()) break;
+            continue;
+        }
+        flushTable();
 
         // 顺序扫描本行：遇到图片引用立刻插入图片（位置=代码所在处），再继续后面的文字
         size_t pos = 0;
@@ -751,6 +1009,7 @@ inline bool ExportDocx(const std::wstring& path,
 
         if (nl >= norm.size()) break;
     }
+    flushTable(); // 文末还在攒的表格补输出
 
     // 兜底：md 未引用到的图，按 images 列表顺序附在文末
     {
