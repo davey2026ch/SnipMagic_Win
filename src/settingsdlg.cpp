@@ -283,9 +283,10 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_MEASUREITEM: {
-        // 主题下拉框自绘条目高度
+        // 主题下拉框自绘条目高度：设置窗口整体为固定像素布局，
+        // 这里不能按 DPI 缩放，否则高 DPI 下闭合框被撑高、盖住下面的马赛克行
         auto* mis = reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
-        mis->itemHeight = MulDiv(22, util::GetDpiForWindowSafe(hwnd), 96);
+        mis->itemHeight = 22;
         return TRUE;
     }
     case WM_DRAWITEM: {
@@ -554,15 +555,17 @@ bool SettingsDialog::Show(HWND owner) {
     SendMessageW(volcHint, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     y += 42;
 
-    // 申请地址提示（版本信息与火山 API Key 之间）
+    // 申请地址提示（版本信息与火山 API Key 之间）——多行输入框必须用 \r\n 才会换行
     const wchar_t* tipText =
-        L"MinerU token申请地址（免费，每3个月一换）：https://mineru.net/apiManage/token\n"
+        L"MinerU token申请地址（免费，每3个月一换）：https://mineru.net/apiManage/token\r\n"
         L"火山APIkey申请地址（费用超低）：https://console.volcengine.com/imp/ai-mediakit/settings?";
+    // 提示文字用只读多行输入框（无边框、外观同静态文本）：文字可选中、可 Ctrl+C 复制
     HFONT fontTip = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                 DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
-    HWND tip = CreateWindowW(L"STATIC", tipText,
-                             WS_CHILD | WS_VISIBLE,
-                             20, y, kW - 40, 48, hwnd, nullptr, hi, nullptr);
+    HWND tip = CreateWindowExW(0, L"EDIT", tipText,
+                               WS_CHILD | WS_VISIBLE | ES_MULTILINE |
+                                   ES_READONLY | ES_AUTOVSCROLL,
+                               20, y, kW - 40, 48, hwnd, nullptr, hi, nullptr);
     SendMessageW(tip, WM_SETFONT, reinterpret_cast<WPARAM>(fontTip ? fontTip : font), TRUE);
     y += 56;
 

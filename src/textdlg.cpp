@@ -269,17 +269,17 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
     SendMessageW(trans, BM_SETCHECK, transDefault ? BST_CHECKED : BST_UNCHECKED, 0);
 
     // 文字颜色 / 背景颜色：同一套「设置」按钮 + ColorPicker，逻辑一致
-    // （不用色块，避免白色时用户找不到入口）
+    // （不用色块，避免白色时用户找不到入口）；按钮与标签文字垂直居中
     mkLabel(L"文字颜色", 20, 242, 80, 22);
     st.colorBtn = CreateWindowW(L"BUTTON", L"设置",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                100, 236, 72, 30, hwnd, Hm(TXC_COLOR), hi, nullptr);
+                                100, 240, 72, 30, hwnd, Hm(TXC_COLOR), hi, nullptr);
 
     st.bgColorLabel = mkLabel(L"背景颜色", 190, 242, 80, 22);
     SetWindowLongPtrW(st.bgColorLabel, GWLP_ID, 0);
     st.bgColorBtn = CreateWindowW(L"BUTTON", L"设置",
                                   WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                  270, 236, 72, 30, hwnd, Hm(TXC_BGCOLOR), hi, nullptr);
+                                  270, 240, 72, 30, hwnd, Hm(TXC_BGCOLOR), hi, nullptr);
 
     // 紧凑：按钮贴颜色行，底边少留白
     HWND ok = CreateWindowW(L"BUTTON", L"确定",

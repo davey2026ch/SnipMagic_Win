@@ -17,6 +17,7 @@ struct ToolButton {
     bool showNumber = false;// number tool shows current value
     bool locked = false;    // 双击锁定：可连续添加同类组件
     Tool tool = Tool::Select;
+    int w = 0;              // 逻辑宽度（顶部按钮按「图标+文字」自适应；0=默认）
 };
 
 class App {

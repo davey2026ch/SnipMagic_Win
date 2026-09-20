@@ -313,6 +313,10 @@ void Canvas::OnCustomScroll(int bar, int pos) {
 void Canvas::UpdateScrollBars() {
     if (!hwnd_) return;
 
+    // 自绘滚动条接管显示：系统原生条任何情况下都强制隐藏
+    // （否则缩放窗口时原生条会被重新顶出来，出现两套滚动条）
+    ShowScrollBar(hwnd_, SB_BOTH, FALSE);
+
     auto hideBar = [&](int bar) {
         ShowScrollBar(hwnd_, bar, FALSE);
         SCROLLINFO si = { sizeof(si) };
@@ -339,7 +343,7 @@ void Canvas::UpdateScrollBars() {
         hideBar(SB_HORZ);
     } else {
         SCROLLINFO si = { sizeof(si) };
-        si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
+        si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
         si.nMin = 0;
         si.nMax = contentW - 1;
         si.nPage = static_cast<UINT>(rc.right);
@@ -354,7 +358,7 @@ void Canvas::UpdateScrollBars() {
         hideBar(SB_VERT);
     } else {
         SCROLLINFO si = { sizeof(si) };
-        si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
+        si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
         si.nMin = 0;
         si.nMax = contentH - 1;
         si.nPage = static_cast<UINT>(rc.bottom);

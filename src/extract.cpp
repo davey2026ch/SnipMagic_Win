@@ -1017,6 +1017,191 @@ LRESULT CALLBACK ResultProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 }
 
+// ---------- 结果展示：Markdown → 易读文本 ----------
+// 把 MinerU 输出的 MD 原文转换为类似渲染后的效果：
+// 标题加标记、表格重排对齐、列表/引用替换符号、去掉 **/`/链接 语法记号
+static int DispW(const std::wstring& s) { // 显示宽度：CJK 全角记 2
+    int w = 0;
+    for (wchar_t ch : s) {
+        bool wide = (ch >= 0x1100 && ch <= 0x115F) || ch == 0x2329 || ch == 0x232A ||
+                    (ch >= 0x2E80 && ch <= 0xA4CF) || (ch >= 0xAC00 && ch <= 0xD7A3) ||
+                    (ch >= 0xF900 && ch <= 0xFAFF) || (ch >= 0xFE30 && ch <= 0xFE6F) ||
+                    (ch >= 0xFF00 && ch <= 0xFF60) || (ch >= 0xFFE0 && ch <= 0xFFE6) ||
+                    (ch >= 0x20000 && ch <= 0x3FFFD);
+        w += wide ? 2 : 1;
+    }
+    return w;
+}
+
+static std::wstring PadTo(const std::wstring& s, int w) {
+    std::wstring r = s;
+    int d = w - DispW(s);
+    if (d > 0) r.append(d, L' ');
+    return r;
+}
+
+static std::wstring TrimW(const std::wstring& s) {
+    size_t b = s.find_first_not_of(L" \t\r\n");
+    if (b == std::wstring::npos) return L"";
+    size_t e = s.find_last_not_of(L" \t\r\n");
+    return s.substr(b, e - b + 1);
+}
+
+static std::wstring StripInlineMd(const std::wstring& s) {
+    std::wstring out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size();) {
+        if (i + 1 < s.size() && s[i] == L'*' && s[i + 1] == L'*') { i += 2; continue; }
+        if (s[i] == L'*' || s[i] == L'`') { ++i; continue; }
+        if (s[i] == L'[') {
+            size_t e = s.find(L']', i);
+            if (e != std::wstring::npos && e + 1 < s.size() && s[e + 1] == L'(') {
+                size_t u = s.find(L')', e + 2);
+                if (u != std::wstring::npos) {
+                    out += s.substr(i + 1, e - i - 1);
+                    i = u + 1;
+                    continue;
+                }
+            }
+        }
+        out += s[i++];
+    }
+    return out;
+}
+
+static bool IsTableSep(const std::vector<std::wstring>& cells) {
+    if (cells.empty()) return false;
+    for (const auto& c : cells) {
+        std::wstring t = TrimW(c);
+        if (t.empty()) return false;
+        size_t k = (t[0] == L':') ? 1 : 0;
+        size_t n = t.size();
+        if (n > k && t[n - 1] == L':') --n;
+        if (n <= k) return false;
+        for (size_t i2 = k; i2 < n; ++i2)
+            if (t[i2] != L'-') return false;
+    }
+    return true;
+}
+
+static std::vector<std::wstring> ParseTableRow(const std::wstring& line) {
+    std::vector<std::wstring> cells;
+    size_t b = line.find(L'|');
+    size_t e = line.rfind(L'|');
+    std::wstring inner = (b == std::wstring::npos || e == std::wstring::npos || e <= b)
+                             ? line : line.substr(b + 1, e - b - 1);
+    size_t pos = 0;
+    for (;;) {
+        size_t nxt = inner.find(L'|', pos);
+        if (nxt == std::wstring::npos) {
+            cells.push_back(TrimW(inner.substr(pos)));
+            break;
+        }
+        cells.push_back(TrimW(inner.substr(pos, nxt - pos)));
+        pos = nxt + 1;
+    }
+    return cells;
+}
+
+std::wstring MarkdownToDisplay(const std::wstring& md) {
+    // 拆行（兼容 \r\n 与 \n）
+    std::vector<std::wstring> lines;
+    size_t pos = 0;
+    for (;;) {
+        size_t nxt = md.find(L'\n', pos);
+        std::wstring l = md.substr(pos, (nxt == std::wstring::npos ? md.size() : nxt) - pos);
+        if (!l.empty() && l.back() == L'\r') l.pop_back();
+        lines.push_back(l);
+        if (nxt == std::wstring::npos) break;
+        pos = nxt + 1;
+    }
+
+    std::vector<std::wstring> out;
+    out.reserve(lines.size());
+    bool inCode = false;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        std::wstring t = TrimW(lines[i]);
+
+        if (t.rfind(L"```", 0) == 0) { inCode = !inCode; continue; } // 代码围栏行不显示
+        if (inCode) { out.push_back(lines[i]); continue; }
+
+        // 表格块：连续 | 行 → 重排为对齐文本
+        if (t.size() >= 2 && t.front() == L'|') {
+            std::vector<std::vector<std::wstring>> rows;
+            size_t j = i;
+            while (j < lines.size()) {
+                std::wstring lt = TrimW(lines[j]);
+                if (lt.size() < 2 || lt.front() != L'|') break;
+                rows.push_back(ParseTableRow(lt));
+                ++j;
+            }
+            if (rows.size() >= 1) {
+                bool hasSep = rows.size() >= 2 && IsTableSep(rows[1]);
+                std::vector<std::wstring> header = rows[0];
+                size_t colN = header.size();
+                std::vector<int> w(colN, 3);
+                for (size_t k = 0; k < colN && k < header.size(); ++k)
+                    w[k] = (std::max)(w[k], DispW(header[k]));
+                for (size_t r = hasSep ? 2 : 1; r < rows.size(); ++r)
+                    for (size_t k = 0; k < colN && k < rows[r].size(); ++k)
+                        w[k] = (std::max)(w[k], DispW(rows[r][k]));
+                std::wstring hline;
+                for (size_t k = 0; k < colN; ++k)
+                    hline += PadTo(header[k], w[k]) + L"  ";
+                out.push_back(TrimW(hline));
+                std::wstring sep;
+                for (size_t k = 0; k < colN; ++k) {
+                    int dashN = (std::max)(3, (std::min)(w[k], 30));
+                    for (int q = 0; q < dashN; ++q) sep += L'─';
+                    sep += L"  ";
+                }
+                out.push_back(TrimW(sep));
+                for (size_t r = hasSep ? 2 : 1; r < rows.size(); ++r) {
+                    std::wstring rl;
+                    for (size_t k = 0; k < colN; ++k)
+                        rl += PadTo(k < rows[r].size() ? rows[r][k] : L"", w[k]) + L"  ";
+                    out.push_back(TrimW(rl));
+                }
+                i = j - 1;
+                continue;
+            }
+        }
+
+        // 标题 # ~ ######
+        if (!t.empty() && t[0] == L'#') {
+            size_t lv = 0;
+            while (lv < t.size() && t[lv] == L'#') ++lv;
+            std::wstring txt = TrimW(StripInlineMd(t.substr(lv)));
+            const wchar_t* mark = lv == 1 ? L"■ " : (lv == 2 ? L"● " : L"○ ");
+            if (!txt.empty()) out.push_back(std::wstring(mark) + txt);
+            continue;
+        }
+        // 分隔线
+        if (t.size() >= 3 && t.find_first_not_of(L"-—") == std::wstring::npos) {
+            out.push_back(L"────────────────────────");
+            continue;
+        }
+        // 无序列表
+        if (t.rfind(L"- ", 0) == 0 || t.rfind(L"* ", 0) == 0) {
+            out.push_back(L"• " + StripInlineMd(TrimW(t.substr(2))));
+            continue;
+        }
+        // 引用
+        if (t.rfind(L">", 0) == 0) {
+            out.push_back(L"│ " + StripInlineMd(TrimW(t.substr(1))));
+            continue;
+        }
+        out.push_back(StripInlineMd(lines[i]));
+    }
+
+    std::wstring res;
+    for (auto& l : out) {
+        res += l;
+        res += L'\n';
+    }
+    return res;
+}
+
 void ShowResultDialog(HWND owner, ExtractResult& result) {
     HINSTANCE hi = GetModuleHandleW(nullptr);
     static bool reg = false;
@@ -1058,8 +1243,9 @@ void ShowResultDialog(HWND owner, ExtractResult& result) {
     std::wstring displayRaw = result.markdownWide.empty()
                                  ? netutil::Utf8ToWide(result.markdownUtf8)
                                  : result.markdownWide;
-    // 显示与复制都不含图片代码标签
-    std::wstring displayText = NormalizeEditNewlines(StripMarkdownImagesWide(displayRaw));
+    // 显示与复制都不含图片代码标签；展示文本再做 MD → 易读样式转换
+    std::wstring displayText = NormalizeEditNewlines(
+        MarkdownToDisplay(StripMarkdownImagesWide(displayRaw)));
     HWND edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", displayText.c_str(),
                                 WS_CHILD | WS_VISIBLE | WS_VSCROLL |
                                     ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | ES_WANTRETURN,
@@ -1067,9 +1253,9 @@ void ShowResultDialog(HWND owner, ExtractResult& result) {
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RES_EDIT)), hi, nullptr);
     SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(st.font), TRUE);
     SendMessageW(edit, EM_SETLIMITTEXT, 0x7FFFFFFE, 0);
-    // monospace-ish for md
+    // 雅黑：CJK 全角 / ASCII 半角比例稳定，转换后的表格对齐更整齐
     HFONT fontM = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Consolas");
+                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
     if (fontM) SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(fontM), TRUE);
 
     int by = h - 56;
@@ -1612,7 +1798,30 @@ void RunExtractFlow(HWND owner, Document* doc) {
     wipeWorkDir(); // double-check
 }
 
+// 前置校验：没有可消除的内容（框选/涂抹）时只弹提示框，
+// 不显示「正在消除中」进度窗（提示窗内联在进度窗之外独立弹出）
+bool MagicErasePreflight(HWND owner, Document* doc) {
+    if (!doc || !doc->base) {
+        MessageBoxW(owner, L"没有活动截图", L"魔法消除", MB_ICONWARNING);
+        return false;
+    }
+    if (util::TrimToken(Settings().volcApiKey).empty()) {
+        MessageBoxW(owner, L"请先在「设置」中填写火山 API Key", L"魔法消除", MB_ICONWARNING);
+        return false;
+    }
+    int rx = 0, ry = 0, rw = 0, rh = 0;
+    if (doc->GetRegion(rx, ry, rw, rh)) return true;
+    for (const auto& a : doc->annotations) {
+        if (a && a->type == AnnType::Brush) return true;
+    }
+    MessageBoxW(owner, L"请先用「选择」框选区域，或用「笔刷」涂抹要消除的内容",
+                L"魔法消除", MB_ICONINFORMATION);
+    return false;
+}
+
 void RunMagicErase(HWND owner, Document* doc) {
+    // 无框选/无涂抹：只提示，不进入消除流程（不显示进度窗）
+    if (!MagicErasePreflight(owner, doc)) return;
     ExtractResult dummy;
     ProgressState prog;
     prog.status = L"正在消除中";

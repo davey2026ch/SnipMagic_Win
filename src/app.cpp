@@ -10,6 +10,7 @@
 #include "updater.h"
 #include "darkui.h"
 #include <winuser.h>
+#include <cmath>
 #include <thread>
 
 using namespace Gdiplus;
@@ -65,6 +66,130 @@ void RemoveHotkeyHook() {
     if (g_kbHook) {
         UnhookWindowsHookEx(reinterpret_cast<HHOOK>(g_kbHook));
         g_kbHook = nullptr;
+    }
+}
+
+// 顶部工具栏命令小图标：圆头细线极简风，与左侧工具栏图标同一套笔触
+static void RoundRectPath(GraphicsPath& path, REAL x, REAL y, REAL w, REAL h, REAL r) {
+    REAL d = 2 * r;
+    path.AddArc(x, y, d, d, 180.0f, 90.0f);
+    path.AddArc(x + w - d, y, d, d, 270.0f, 90.0f);
+    path.AddArc(x + w - d, y + h - d, d, d, 0.0f, 90.0f);
+    path.AddArc(x, y + h - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
+void DrawCommandIcon(Graphics& g, int id, REAL x, REAL y, REAL s, Color c) {
+    Pen p(c, 1.5f);
+    p.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
+    p.SetLineJoin(LineJoinRound);
+    SolidBrush b(c);
+
+    switch (id) {
+    case ID_CMD_CAPTURE: { // 截图：相机（圆角机身 + 镜头 + 顶檐）
+        GraphicsPath body;
+        RoundRectPath(body, x + s * 0.06f, y + s * 0.26f, s * 0.88f, s * 0.58f, s * 0.12f);
+        g.DrawPath(&p, &body);
+        g.DrawEllipse(&p, x + s * 0.33f, y + s * 0.38f, s * 0.34f, s * 0.34f);
+        g.DrawLine(&p, x + s * 0.30f, y + s * 0.14f, x + s * 0.48f, y + s * 0.14f);
+        break;
+    }
+    case ID_CMD_LONG_CAPTURE: { // 长截图：页面 + 页内向下箭头
+        GraphicsPath page;
+        RoundRectPath(page, x + s * 0.08f, y + s * 0.06f, s * 0.62f, s * 0.88f, s * 0.10f);
+        g.DrawPath(&p, &page);
+        g.DrawLine(&p, x + s * 0.24f, y + s * 0.28f, x + s * 0.54f, y + s * 0.28f);
+        g.DrawLine(&p, x + s * 0.24f, y + s * 0.44f, x + s * 0.46f, y + s * 0.44f);
+        g.DrawLine(&p, x + s * 0.35f, y + s * 0.56f, x + s * 0.35f, y + s * 0.82f);
+        g.DrawLine(&p, x + s * 0.25f, y + s * 0.72f, x + s * 0.35f, y + s * 0.84f);
+        g.DrawLine(&p, x + s * 0.45f, y + s * 0.72f, x + s * 0.35f, y + s * 0.84f);
+        break;
+    }
+    case ID_CMD_MOSAIC: { // 马赛克：2x2 圆角方块
+        REAL u = s * 0.38f, r2 = s * 0.05f;
+        GraphicsPath q1, q2, q3, q4;
+        RoundRectPath(q1, x + s * 0.07f, y + s * 0.07f, u, u, r2);
+        RoundRectPath(q2, x + s * 0.55f, y + s * 0.07f, u, u, r2);
+        RoundRectPath(q3, x + s * 0.07f, y + s * 0.55f, u, u, r2);
+        RoundRectPath(q4, x + s * 0.55f, y + s * 0.55f, u, u, r2);
+        g.FillPath(&b, &q1); g.DrawPath(&p, &q1);
+        g.DrawPath(&p, &q2);
+        g.DrawPath(&p, &q3);
+        g.FillPath(&b, &q4); g.DrawPath(&p, &q4);
+        break;
+    }
+    case ID_CMD_EXTRACT: { // 提取内容：文档 + 大写 T（文字提取）
+        GraphicsPath page;
+        RoundRectPath(page, x + s * 0.06f, y + s * 0.06f, s * 0.60f, s * 0.88f, s * 0.10f);
+        g.DrawPath(&p, &page);
+        g.DrawLine(&p, x + s * 0.18f, y + s * 0.26f, x + s * 0.54f, y + s * 0.26f);
+        g.DrawLine(&p, x + s * 0.36f, y + s * 0.26f, x + s * 0.36f, y + s * 0.72f);
+        g.DrawLine(&p, x + s * 0.22f, y + s * 0.74f, x + s * 0.50f, y + s * 0.74f);
+        break;
+    }
+    case ID_CMD_MAGIC_ERASE: { // 魔法消除：魔棒 + 十字星光
+        g.DrawLine(&p, x + s * 0.12f, y + s * 0.88f, x + s * 0.56f, y + s * 0.44f);
+        g.DrawLine(&p, x + s * 0.46f, y + s * 0.34f, x + s * 0.64f, y + s * 0.52f);
+        g.DrawLine(&p, x + s * 0.78f, y + s * 0.08f, x + s * 0.78f, y + s * 0.36f);
+        g.DrawLine(&p, x + s * 0.64f, y + s * 0.22f, x + s * 0.92f, y + s * 0.22f);
+        g.DrawLine(&p, x + s * 0.90f, y + s * 0.50f, x + s * 0.90f, y + s * 0.66f);
+        g.DrawLine(&p, x + s * 0.82f, y + s * 0.58f, x + s * 0.98f, y + s * 0.58f);
+        break;
+    }
+    case ID_CMD_SETTINGS: { // 设置：三根调节滑杆
+        g.DrawLine(&p, x + s * 0.08f, y + s * 0.22f, x + s * 0.92f, y + s * 0.22f);
+        g.DrawLine(&p, x + s * 0.08f, y + s * 0.50f, x + s * 0.92f, y + s * 0.50f);
+        g.DrawLine(&p, x + s * 0.08f, y + s * 0.78f, x + s * 0.92f, y + s * 0.78f);
+        g.FillEllipse(&b, x + s * 0.22f, y + s * 0.13f, s * 0.18f, s * 0.18f);
+        g.FillEllipse(&b, x + s * 0.60f, y + s * 0.41f, s * 0.18f, s * 0.18f);
+        g.FillEllipse(&b, x + s * 0.36f, y + s * 0.69f, s * 0.18f, s * 0.18f);
+        break;
+    }
+    case ID_CMD_SAVE_ALL: { // 全部保存：托盘 + 实心箭头
+        g.DrawLine(&p, x + s * 0.08f, y + s * 0.58f, x + s * 0.08f, y + s * 0.88f);
+        g.DrawLine(&p, x + s * 0.08f, y + s * 0.88f, x + s * 0.92f, y + s * 0.88f);
+        g.DrawLine(&p, x + s * 0.92f, y + s * 0.88f, x + s * 0.92f, y + s * 0.58f);
+        g.DrawLine(&p, x + s * 0.50f, y + s * 0.06f, x + s * 0.50f, y + s * 0.56f);
+        PointF tri[3] = {
+            PointF(x + s * 0.35f, y + s * 0.44f),
+            PointF(x + s * 0.65f, y + s * 0.44f),
+            PointF(x + s * 0.50f, y + s * 0.62f)
+        };
+        g.FillPolygon(&b, tri, 3);
+        break;
+    }
+    case ID_CMD_UNDO: { // 撤销：钩形曲线从右下升到左上，水平箭头指向左（参考样式）
+        GraphicsPath hook;
+        hook.AddBezier(PointF(x + s * 0.74f, y + s * 0.86f),
+                       PointF(x + s * 0.86f, y + s * 0.40f),
+                       PointF(x + s * 0.58f, y + s * 0.14f),
+                       PointF(x + s * 0.24f, y + s * 0.30f));
+        g.DrawPath(&p, &hook);
+        PointF tri[3] = {
+            PointF(x + s * 0.04f, y + s * 0.28f),
+            PointF(x + s * 0.24f, y + s * 0.12f),
+            PointF(x + s * 0.24f, y + s * 0.44f)
+        };
+        g.FillPolygon(&b, tri, 3);
+        break;
+    }
+    case ID_CMD_REDO: { // 重做：镜像，水平箭头指向右
+        GraphicsPath hook;
+        hook.AddBezier(PointF(x + s * 0.26f, y + s * 0.86f),
+                       PointF(x + s * 0.14f, y + s * 0.40f),
+                       PointF(x + s * 0.42f, y + s * 0.14f),
+                       PointF(x + s * 0.76f, y + s * 0.30f));
+        g.DrawPath(&p, &hook);
+        PointF tri[3] = {
+            PointF(x + s * 0.96f, y + s * 0.28f),
+            PointF(x + s * 0.76f, y + s * 0.12f),
+            PointF(x + s * 0.76f, y + s * 0.44f)
+        };
+        g.FillPolygon(&b, tri, 3);
+        break;
+    }
+    default:
+        break;
     }
 }
 
@@ -446,9 +571,9 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_MEASUREITEM: {
-        // 序号弹出菜单的自绘条目尺寸：宽度贴合 1-2 位数字，不再撑满旧固定值
+        // 序号弹出菜单的自绘条目尺寸：宽度贴合 1-2 位数字
         auto* mis = reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
-        mis->itemWidth = MulDiv(44, dpi_, 96);
+        mis->itemWidth = MulDiv(38, dpi_, 96);
         mis->itemHeight = MulDiv(26, dpi_, 96);
         return TRUE;
     }
@@ -509,9 +634,12 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         SolidBrush fg(ToGpColor(tcol));
         wchar_t buf[16];
         swprintf_s(buf, L"%d", num);
-        PointF rf(static_cast<REAL>(rc.left + MulDiv(14, dpi_, 96)),
-                  static_cast<REAL>(rc.top + (rc.bottom - rc.top - 18) / 2 + 1));
-        g.DrawString(buf, -1, &fnt, rf, &fg);
+        // 数字在条目内水平居中
+        RectF m;
+        g.MeasureString(buf, -1, &fnt, PointF(0, 0), &m);
+        REAL cx = static_cast<REAL>(rc.left + rc.right) / 2.0f;
+        REAL cy = static_cast<REAL>(rc.top + rc.bottom) / 2.0f - m.Height / 2.0f;
+        g.DrawString(buf, -1, &fnt, PointF(cx - m.Width / 2.0f, cy), &fg);
         return TRUE;
     }
     case WM_ERASEBKGND:
@@ -609,6 +737,9 @@ void App::BuildToolbars() {
         b.text = text;
         b.tip = text;
         b.isLeft = false;
+        // 「图标(14) + 间隙(4) + 文字(12/汉字) + 两侧留白(6)」按字数自适应宽度
+        b.w = 6 + 14 + 4 + 12 * static_cast<int>(wcslen(text)) + 6;
+        if (b.w < 56) b.w = 56;
         topBtns_.push_back(b);
     };
     addTop(ID_CMD_CAPTURE, L"截图");
@@ -949,14 +1080,14 @@ void App::LayoutChildren() {
         statusH_ = sr.bottom - sr.top;
     }
 
-    // top buttons
+    // top buttons（宽度按各按钮「图标+文字」自适应）
     int pad = util::Scale(6, dpi_);
     int bx = pad;
     int by = (topH_ - util::Scale(30, dpi_)) / 2;
-    int bw = util::Scale(72, dpi_);
     int bh = util::Scale(30, dpi_);
     int gap = util::Scale(6, dpi_);
     for (auto& b : topBtns_) {
+        int bw = util::Scale(b.w ? b.w : 72, dpi_);
         b.rc = { bx, by, bx + bw, by + bh };
         bx += bw + gap;
     }
@@ -1169,12 +1300,24 @@ void App::OnPaint() {
         g.DrawRectangle(&p, b.rc.left, b.rc.top, bw - 1, bh - 1);
         Color tc = (active || primary) ? Color(255, 255, 255, 255) : ToGpColor(s.TextColor());
         SolidBrush tbr(tc);
+        // 顶部按钮：小图标(14) + 文字，整体水平居中，比例与按钮尺寸协调
+        REAL isz = static_cast<REAL>(util::Scale(14, dpi_));
+        REAL gap = static_cast<REAL>(util::Scale(4, dpi_));
+        RectF mRect;
+        g.MeasureString(b.text.c_str(), -1, &fontSmall, PointF(0, 0), &mRect);
+        REAL total = isz + gap + mRect.Width;
+        REAL startX = static_cast<REAL>(b.rc.left) +
+                      ((bw - total) / 2.0f > util::Scale(4, dpi_)
+                           ? (bw - total) / 2.0f
+                           : util::Scale(4, dpi_));
+        REAL iy = static_cast<REAL>(b.rc.top) + (bh - isz) / 2.0f;
+        DrawCommandIcon(g, b.id, startX, iy, isz, tc);
+        RectF tlayout(startX + isz + gap, static_cast<REAL>(b.rc.top),
+                      mRect.Width + util::Scale(4, dpi_),
+                      static_cast<REAL>(bh));
         StringFormat fmt;
-        fmt.SetAlignment(StringAlignmentCenter);
         fmt.SetLineAlignment(StringAlignmentCenter);
-        RectF layout(static_cast<REAL>(b.rc.left), static_cast<REAL>(b.rc.top),
-                     static_cast<REAL>(bw), static_cast<REAL>(bh));
-        g.DrawString(b.text.c_str(), -1, &font, layout, &fmt, &tbr);
+        g.DrawString(b.text.c_str(), -1, &fontSmall, tlayout, &fmt, &tbr);
     };
 
     Tool cur = Canvas::Instance().GetTool();
