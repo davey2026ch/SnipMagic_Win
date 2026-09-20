@@ -72,7 +72,7 @@ def main():
     # 2) 上传附件（令牌必须放 URL query）
     exe_bytes = open(EXE, "rb").read()
     boundary = "----screenshottool" + os.urandom(8).hex()
-    fn = "截图工具.exe".encode("utf-8")
+    fn = "截图大师SnipMagic.exe".encode("utf-8")
     part = (("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
              "Content-Type: application/octet-stream\r\n\r\n" % (boundary, fn.decode("utf-8")))
             ).encode("utf-8") + exe_bytes + ("\r\n--%s--\r\n" % boundary).encode("utf-8")

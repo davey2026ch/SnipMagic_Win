@@ -2,6 +2,9 @@ build/
 dist/
 out/
 截图工具-绿色版/
+截图大师SnipMagic-绿色版/
+SnipMagic.ini
+截图工具.ini
 *.obj
 *.o
 *.exe
@@ -21,7 +24,6 @@ CMakeCache.txt
 cmake_install.cmake
 *.tmp
 *.log
-截图工具.ini
 .workbuddy/
 截图工具需求说明书1.0.docx
 work/
