@@ -364,9 +364,7 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         if (MessageBoxW(hwnd, msg.c_str(), L"软件更新",
                         MB_OKCANCEL | MB_ICONINFORMATION) == IDOK) {
-            wchar_t tmp[MAX_PATH] = {};
-            GetTempPathW(MAX_PATH, tmp);
-            std::wstring dest = std::wstring(tmp) + L"ScreenshotTool_update.exe";
+            std::wstring dest = updater::NewExeStagingPath();
             std::thread([hwnd, dest]() {
                 std::wstring err;
                 if (updater::DownloadUpdate(g_updateInfo.assetUrl, dest, err)) {

@@ -121,43 +121,73 @@ inline bool DownloadUpdate(const std::wstring& url, const std::wstring& destPath
     return true;
 }
 
+// 新版本下载落点：与当前 exe 同目录的 .new 文件。
+// 同卷改名替换不会跨盘复制，且避开 %TEMP%（杀软对临时目录的 exe 更敏感）。
+inline std::wstring NewExeStagingPath() {
+    wchar_t cur[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, cur, MAX_PATH);
+    return std::wstring(cur) + L".new";
+}
+
 // 替换核心：旧 exe 改名 → 新 exe 归位（可选重启、可选延迟清理旧文件）。
-// 单独拆出以便测试。失败时尽量回滚。
+// 兜底：改名被占用（杀毒/资源管理器/残留进程锁）时，交给 cmd 在本进程
+// 退出后完成替换并重启——进程退出后文件锁必然解除。返回 true 表示
+// 「替换已发生或必将发生」，调用方应立即退出当前进程。
 inline bool SwapUpdateFiles(const std::wstring& curPath, const std::wstring& newExePath,
                             bool restart, bool cleanupOld) {
     std::wstring oldPath = curPath + L".old";
     DeleteFileW(oldPath.c_str());
     // Windows 允许对运行中的 exe 改名
-    if (!MoveFileExW(curPath.c_str(), oldPath.c_str(), MOVEFILE_REPLACE_EXISTING)) return false;
-    if (!MoveFileExW(newExePath.c_str(), curPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        MoveFileExW(oldPath.c_str(), curPath.c_str(), MOVEFILE_REPLACE_EXISTING); // 回滚
-        return false;
-    }
-    if (restart) {
-        STARTUPINFOW si = {};
-        si.cb = sizeof(si);
-        PROCESS_INFORMATION pi = {};
-        std::wstring cmd = L"\"" + curPath + L"\"";
-        if (!CreateProcessW(curPath.c_str(), cmd.data(), nullptr, nullptr,
-                            FALSE, 0, nullptr, nullptr, &si, &pi)) {
-            return false; // 新程序没起来；文件已就位，用户可手动启动
+    if (MoveFileExW(curPath.c_str(), oldPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        if (MoveFileExW(newExePath.c_str(), curPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+            if (restart) {
+                STARTUPINFOW si = {};
+                si.cb = sizeof(si);
+                PROCESS_INFORMATION pi = {};
+                std::wstring cmd = L"\"" + curPath + L"\"";
+                if (CreateProcessW(curPath.c_str(), cmd.data(), nullptr, nullptr,
+                                   FALSE, 0, nullptr, nullptr, &si, &pi)) {
+                    if (pi.hProcess) CloseHandle(pi.hProcess);
+                    if (pi.hThread) CloseHandle(pi.hThread);
+                }
+                // 新程序没起来也不算失败：文件已就位，用户可手动启动
+            }
+            if (cleanupOld) {
+                // 本进程退出后旧文件才解锁，交给系统延迟删除
+                std::wstring del = L"cmd.exe /c ping -n 4 127.0.0.1 > nul & del /f /q \"" +
+                                   oldPath + L"\"";
+                STARTUPINFOW si2 = {};
+                si2.cb = sizeof(si2);
+                si2.dwFlags = STARTF_USESHOWWINDOW;
+                si2.wShowWindow = SW_HIDE;
+                PROCESS_INFORMATION pi2 = {};
+                CreateProcessW(nullptr, del.data(), nullptr, nullptr, FALSE,
+                               CREATE_NO_WINDOW, nullptr, nullptr, &si2, &pi2);
+                if (pi2.hProcess) CloseHandle(pi2.hProcess);
+                if (pi2.hThread) CloseHandle(pi2.hThread);
+            }
+            return true;
         }
-        if (pi.hProcess) CloseHandle(pi.hProcess);
-        if (pi.hThread) CloseHandle(pi.hThread);
+        // 第二步失败：把旧文件还原，走兜底
+        MoveFileExW(oldPath.c_str(), curPath.c_str(), MOVEFILE_REPLACE_EXISTING);
     }
-    if (cleanupOld) {
-        // 本进程退出后旧文件才解锁，交给系统延迟删除
-        std::wstring del = L"cmd.exe /c ping -n 4 127.0.0.1 > nul & del /f /q \"" + oldPath + L"\"";
-        STARTUPINFOW si2 = {};
-        si2.cb = sizeof(si2);
-        si2.dwFlags = STARTF_USESHOWWINDOW;
-        si2.wShowWindow = SW_HIDE;
-        PROCESS_INFORMATION pi2 = {};
-        CreateProcessW(nullptr, del.data(), nullptr, nullptr, FALSE,
-                       CREATE_NO_WINDOW, nullptr, nullptr, &si2, &pi2);
-        if (pi2.hProcess) CloseHandle(pi2.hProcess);
-        if (pi2.hThread) CloseHandle(pi2.hThread);
+
+    // 兜底：3 秒后（本进程已退出）move 新文件到位并重启。
+    // move /y 同卷执行；start 启动新程序。
+    std::wstring cmd = L"cmd.exe /c ping -n 3 127.0.0.1 > nul & move /y \"" +
+                       newExePath + L"\" \"" + curPath + L"\"";
+    if (restart) cmd += L" & start \"\" \"" + curPath + L"\"";
+    STARTUPINFOW si3 = {};
+    si3.cb = sizeof(si3);
+    si3.dwFlags = STARTF_USESHOWWINDOW;
+    si3.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi3 = {};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si3, &pi3)) {
+        return false; // 连兜底都起不来（极端情况）才报失败
     }
+    if (pi3.hProcess) CloseHandle(pi3.hProcess);
+    if (pi3.hThread) CloseHandle(pi3.hThread);
     return true;
 }
 

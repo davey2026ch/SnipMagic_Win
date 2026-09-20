@@ -284,9 +284,7 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                L"将自动下载并重启程序（未保存的设置修改会丢失），是否继续？";
             if (MessageBoxW(hwnd, msg.c_str(), L"检测更新",
                             MB_YESNO | MB_ICONQUESTION) == IDYES) {
-                std::wstring tmp = netutil::MakeTempDir(L"st_upd");
-                s_updDest = tmp + L"\\" +
-                    (i.assetName.empty() ? std::wstring(L"截图工具.exe") : i.assetName);
+                s_updDest = updater::NewExeStagingPath();
                 SetWindowTextW(st->verLabel, L"正在下载更新，请稍候…");
                 EnableWindow(GetDlgItem(hwnd, IDC_CHECK_UPDATE), FALSE);
                 st->updateBusy = true;

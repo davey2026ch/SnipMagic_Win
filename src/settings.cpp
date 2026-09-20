@@ -212,9 +212,7 @@ void AppSettings::Save() const {
     IniWrite(L"Settings", L"MinerUToken", util::TrimToken(mineruToken));
     IniWrite(L"Settings", L"VolcApiKey", util::TrimToken(volcApiKey));
 
-    // Meta
-    IniWrite(L"Meta", L"Version", APP_VERSION);
-    std::string bt = APP_BUILD_TIME;
-    std::wstring wbt(bt.begin(), bt.end());
-    IniWrite(L"Meta", L"BuildTime", wbt);
+    // 版本号 / 打包时间属于编译期信息（设置界面直接读 APP_VERSION 等宏），
+    // 不写入 ini；顺手清掉历史版本遗留的 [Meta] 段
+    WritePrivateProfileSectionW(L"Meta", nullptr, util::GetIniPath().c_str());
 }
