@@ -50,6 +50,13 @@ if(MSVC)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/dist"
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/dist"
     )
+    # dist 下固定保留两份 exe：英文本名 + 中文副本（内容相同）
+    add_custom_command(TARGET ScreenshotTool POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:ScreenshotTool>"
+                "${CMAKE_SOURCE_DIR}/dist/截图大师SnipMagic.exe"
+        COMMENT "Copy 截图大师SnipMagic.exe to dist"
+    )
 endif()
 
 target_link_libraries(ScreenshotTool PRIVATE
