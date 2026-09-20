@@ -104,8 +104,8 @@ LRESULT CALLBACK ProgressProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HDC hdc = reinterpret_cast<HDC>(wParam);
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, RGB(40, 40, 40));
-        static HBRUSH br = CreateSolidBrush(RGB(250, 250, 250));
-        return reinterpret_cast<LRESULT>(br);
+        // 与窗口背景同色（COLOR_WINDOW），否则文字后面会有一条浅灰色带
+        return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
     }
     case WM_COMMAND:
         if (st && LOWORD(wParam) == IDC_PROG_CANCEL) {
@@ -186,15 +186,15 @@ UINT_PTR ShowProgressAndRun(HWND owner, const wchar_t* title, ProgressState& st)
     HINSTANCE hi = GetModuleHandleW(nullptr);
     EnsureProgClass(hi);
     int w = 420, h = 160;
-    int sw = GetSystemMetrics(SM_CXSCREEN);
-    int sh = GetSystemMetrics(SM_CYSCREEN);
     RECT wr = {0, 0, w, h};
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
     AdjustWindowRect(&wr, style, FALSE);
     int ow = wr.right - wr.left;
     int oh = wr.bottom - wr.top;
+    // 弹窗显示在主窗口所在的显示器（多屏时不再固定弹到主屏）
+    POINT pos = util::CenterOnMonitorOf(owner, ow, oh);
     HWND hwnd = CreateWindowExW(WS_EX_TOPMOST, kProgClass, title, style,
-                                (sw - ow) / 2, (sh - oh) / 2, ow, oh,
+                                pos.x, pos.y, ow, oh,
                                 owner, nullptr, hi, &st);
     if (!hwnd) return 0;
     st.hwnd = hwnd;
@@ -217,7 +217,7 @@ UINT_PTR ShowProgressAndRun(HWND owner, const wchar_t* title, ProgressState& st)
 
     HWND cancelBtn = CreateWindowW(L"BUTTON", st.cancelText.empty() ? L"取消识别" : st.cancelText.c_str(),
                                    WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   w - 130, 90, 100, 32, hwnd,
+                                   w - 130, 112, 100, 32, hwnd,
                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PROG_CANCEL)), hi, nullptr);
     SendMessageW(cancelBtn, WM_SETFONT, reinterpret_cast<WPARAM>(st.font), TRUE);
 
@@ -864,8 +864,8 @@ LRESULT CALLBACK ResultProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         HDC hdc = reinterpret_cast<HDC>(wParam);
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, RGB(40, 40, 40));
-        static HBRUSH br = CreateSolidBrush(RGB(250, 250, 250));
-        return reinterpret_cast<LRESULT>(br);
+        // 与窗口背景同色（COLOR_WINDOW），否则文字后面会有一条浅灰色带
+        return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
     }
     case WM_CTLCOLORLISTBOX:
     case WM_CTLCOLOREDIT: {
@@ -924,15 +924,15 @@ void ShowResultDialog(HWND owner, ExtractResult& result) {
     st.result = &result;
 
     int w = 720, h = 520;
-    int sw = GetSystemMetrics(SM_CXSCREEN);
-    int sh = GetSystemMetrics(SM_CYSCREEN);
     RECT wr = {0, 0, w, h};
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
     AdjustWindowRect(&wr, style, FALSE);
     int ow = wr.right - wr.left;
     int oh = wr.bottom - wr.top;
+    // 弹窗显示在主窗口所在的显示器（多屏时不再固定弹到主屏）
+    POINT pos = util::CenterOnMonitorOf(owner, ow, oh);
     HWND hwnd = CreateWindowExW(WS_EX_TOPMOST, L"ScreenshotToolExtractResultDlg", L"提取内容",
-                                style, (sw - ow) / 2, (sh - oh) / 2, ow, oh,
+                                style, pos.x, pos.y, ow, oh,
                                 owner, nullptr, hi, &st);
     if (!hwnd) return;
     st.hwnd = hwnd;
@@ -1214,8 +1214,69 @@ void RunMagicEraseImpl(HWND owner, Document* doc, ProgressState& prog, ExtractRe
         return;
     }
 
+    // 火山接口对分辨率有限制（错误 800012：短边过小、长宽比过大都会被拒，
+    // 例如细长竖条选区 304×1792）。归一化到安全范围：
+    //   长边 ≤ 2000；短边 ≥ 512；长宽比 ≤ 2。
+    // 内容固定贴在左上角，不足处在右侧/下方做边缘延展，结果只取内容区域，
+    // 因此区域/遮罩坐标只需乘统一缩放比，无需关心补边。
+    int sendW = cw, sendH = ch;
+    double scale = 1.0;
+    {
+        const int kMaxSide = 2000;
+        int longSide = (std::max)(cw, ch);
+        if (longSide > kMaxSide) scale = static_cast<double>(kMaxSide) / longSide;
+    }
+    int contentW = (std::max)(1, static_cast<int>(std::lround(cw * scale)));
+    int contentH = (std::max)(1, static_cast<int>(std::lround(ch * scale)));
+    sendW = contentW;
+    sendH = contentH;
+    {
+        const int kMinSide = 512;
+        int mn = (std::min)(sendW, sendH);
+        int mx = (std::max)(sendW, sendH);
+        int target = (std::max)(kMinSide, (mx + 1) / 2); // 长宽比压到 2:1 以内
+        if (mn < target) {
+            if (sendW <= sendH) sendW = target; else sendH = target;
+        }
+    }
+
+    std::unique_ptr<Bitmap> send;
+    if (sendW == cw && sendH == ch) {
+        send.reset(crop.release());
+    } else {
+        send = std::make_unique<Bitmap>(sendW, sendH, PixelFormat32bppARGB);
+        Graphics sg(send.get());
+        sg.SetInterpolationMode(scale < 1.0
+            ? Gdiplus::InterpolationModeHighQualityBicubic
+            : Gdiplus::InterpolationModeNearestNeighbor);
+        sg.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+        // 1) 内容区等比缩放
+        sg.DrawImage(crop.get(), Gdiplus::Rect(0, 0, contentW, contentH),
+                     0, 0, cw, ch, Gdiplus::UnitPixel);
+        // 2) 右侧/下方不足处：拉伸最后一列/一行像素做边缘延展（视觉无缝）。
+        //    目的矩形向外多画 2px，靠位图边界裁剪兜底——GDI+ 在位图最右/最下
+        //    一列有舍入问题，恰好按 rect 绘制时最后一列可能漏绘（实测）。
+        if (contentW < sendW) {
+            sg.DrawImage(crop.get(),
+                         Gdiplus::Rect(contentW, 0, sendW - contentW + 2, contentH),
+                         cw - 1, 0, 1, ch, Gdiplus::UnitPixel);
+        }
+        if (contentH < sendH) {
+            sg.DrawImage(crop.get(),
+                         Gdiplus::Rect(0, contentH, contentW, sendH - contentH + 2),
+                         0, ch - 1, cw, 1, Gdiplus::UnitPixel);
+        }
+        if (contentW < sendW && contentH < sendH) {
+            sg.DrawImage(crop.get(),
+                         Gdiplus::Rect(contentW, contentH,
+                                       sendW - contentW + 2, sendH - contentH + 2),
+                         cw - 1, ch - 1, 1, 1, Gdiplus::UnitPixel);
+        }
+    }
+    crop.reset();
+
     std::string cropPng;
-    if (!ziputil::BitmapToPngBytes(crop.get(), cropPng)) {
+    if (!ziputil::BitmapToPngBytes(send.get(), cropPng)) {
         MessageBoxW(owner, L"PNG 编码失败", L"魔法消除", MB_ICONWARNING);
         return;
     }
@@ -1240,17 +1301,17 @@ void RunMagicEraseImpl(HWND owner, Document* doc, ProgressState& prog, ExtractRe
 
     if (hasRegion) {
         useArea = true;
-        nx1 = static_cast<double>(rx - ox) / static_cast<double>(cw);
-        ny1 = static_cast<double>(ry - oy) / static_cast<double>(ch);
-        nx2 = static_cast<double>(rx + rw - ox) / static_cast<double>(cw);
-        ny2 = static_cast<double>(ry + rh - oy) / static_cast<double>(ch);
+        nx1 = static_cast<double>(rx - ox) * scale / static_cast<double>(sendW);
+        ny1 = static_cast<double>(ry - oy) * scale / static_cast<double>(sendH);
+        nx2 = static_cast<double>(rx + rw - ox) * scale / static_cast<double>(sendW);
+        ny2 = static_cast<double>(ry + rh - oy) * scale / static_cast<double>(sendH);
         nx1 = (std::max)(0.0, (std::min)(1.0, nx1));
         ny1 = (std::max)(0.0, (std::min)(1.0, ny1));
         nx2 = (std::max)(0.0, (std::min)(1.0, nx2));
         ny2 = (std::max)(0.0, (std::min)(1.0, ny2));
     } else {
-        // RGB mask: white = erase
-        Bitmap mask(cw, ch, PixelFormat24bppRGB);
+        // RGB mask: white = erase（遮罩尺寸与发送图一致，坐标按统一缩放比映射）
+        Bitmap mask(sendW, sendH, PixelFormat24bppRGB);
         {
             Graphics g(&mask);
             g.Clear(Color(255, 0, 0, 0));
@@ -1258,18 +1319,25 @@ void RunMagicEraseImpl(HWND owner, Document* doc, ProgressState& prog, ExtractRe
             for (int idx : brushIdx) {
                 auto* f = dynamic_cast<FreehandAnn*>(doc->annotations[idx].get());
                 if (!f) continue;
-                float tw = (std::max)(1.0f, static_cast<float>(f->style.thickness));
+                float tw = (std::max)(1.0f, static_cast<float>(f->style.thickness) *
+                                               static_cast<float>(scale));
                 Pen p(Color(255, 255, 255), tw);
                 p.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
                 p.SetLineJoin(LineJoinRound);
                 if (f->points.size() == 1) {
                     float r = tw * 0.5f;
                     SolidBrush br(Color(255, 255, 255));
-                    g.FillEllipse(&br, f->points[0].X - ox - r, f->points[0].Y - oy - r, r * 2, r * 2);
+                    g.FillEllipse(&br,
+                                  (f->points[0].X - ox) * static_cast<float>(scale) - r,
+                                  (f->points[0].Y - oy) * static_cast<float>(scale) - r,
+                                  r * 2, r * 2);
                 } else if (f->points.size() >= 2) {
                     std::vector<PointF> pts;
                     pts.reserve(f->points.size());
-                    for (const auto& pt : f->points) pts.push_back(PointF(pt.X - ox, pt.Y - oy));
+                    for (const auto& pt : f->points) {
+                        pts.push_back(PointF((pt.X - ox) * static_cast<float>(scale),
+                                             (pt.Y - oy) * static_cast<float>(scale)));
+                    }
                     g.DrawLines(&p, pts.data(), static_cast<INT>(pts.size()));
                 }
             }
@@ -1309,15 +1377,28 @@ void RunMagicEraseImpl(HWND owner, Document* doc, ProgressState& prog, ExtractRe
     }
 
     doc->PushUndo();
-    // 直接烙进底图：消除结果覆盖写入 base 像素，不生成可选中/可拖动的标注图层
+    // 直接烙进底图：消除结果覆盖写入 base 像素，不生成可选中/可拖动的标注图层。
+    // 发送图可能做过归一化（缩放/补边），这里只取结果的内容区域并还原到选区原尺寸。
     {
         Gdiplus::Graphics g(doc->base.get());
-        g.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
-        g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
-        g.DrawImage(resultBmp.get(), Gdiplus::Rect(ox, oy,
-                    static_cast<INT>(resultBmp->GetWidth()),
-                    static_cast<INT>(resultBmp->GetHeight())),
-                    0, 0, resultBmp->GetWidth(), resultBmp->GetHeight(), Gdiplus::UnitPixel);
+        const UINT resW = resultBmp->GetWidth();
+        const UINT resH = resultBmp->GetHeight();
+        // 结果的内容区域（发送图左上角 contentW×contentH），防止越界
+        INT srcW = static_cast<INT>(std::min<UINT>(resW, static_cast<UINT>(contentW)));
+        INT srcH = static_cast<INT>(std::min<UINT>(resH, static_cast<UINT>(contentH)));
+        if (srcW == cw && srcH == ch) {
+            // 未归一化：逐像素回写，保证无损
+            g.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+            g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+            g.DrawImage(resultBmp.get(), Gdiplus::Rect(ox, oy, cw, ch),
+                        0, 0, srcW, srcH, Gdiplus::UnitPixel);
+        } else {
+            // 有缩放：高质量重采样还原到选区原尺寸
+            g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+            g.DrawImage(resultBmp.get(), Gdiplus::Rect(ox, oy, cw, ch),
+                        0, 0, srcW, srcH, Gdiplus::UnitPixel);
+        }
     }
     resultBmp.reset();
 

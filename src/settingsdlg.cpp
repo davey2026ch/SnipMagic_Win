@@ -363,19 +363,19 @@ bool SettingsDialog::Show(HWND owner) {
     st.draft = Settings();
     st.themeColor = Settings().themeColor;
 
-    int sw = GetSystemMetrics(SM_CXSCREEN);
-    int sh = GetSystemMetrics(SM_CYSCREEN);
     RECT wr = { 0, 0, kW, kH };
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     DWORD exStyle = WS_EX_TOPMOST;
     AdjustWindowRectEx(&wr, style, FALSE, exStyle);
     int outerW = wr.right - wr.left;
     int outerH = wr.bottom - wr.top;
+    // 弹窗显示在主窗口所在的显示器（多屏时不再固定弹到主屏）
+    POINT pos = util::CenterOnMonitorOf(owner, outerW, outerH);
 
     HWND hwnd = CreateWindowExW(exStyle,
                                 kClass, L"设置",
                                 style,
-                                (sw - outerW) / 2, (sh - outerH) / 2, outerW, outerH,
+                                pos.x, pos.y, outerW, outerH,
                                 owner, nullptr, hi, &st);
     if (!hwnd) return false;
     SetWindowTextW(hwnd, L"设置");

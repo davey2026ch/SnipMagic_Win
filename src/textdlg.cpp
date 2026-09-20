@@ -208,8 +208,7 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
     st.bgColor = existing ? existing->bgColor : initialColor;
     st.staticBrush = CreateSolidBrush(RGB(250, 250, 250));
 
-    int sw = GetSystemMetrics(SM_CXSCREEN);
-    int sh = GetSystemMetrics(SM_CYSCREEN);
+    // 弹窗显示在主窗口所在的显示器（多屏时不再固定弹到主屏）
     const wchar_t* caption = existing ? L"编辑文字" : L"插入文字";
 
     RECT wr = { 0, 0, kW, kH };
@@ -218,9 +217,10 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
     AdjustWindowRectEx(&wr, style, FALSE, exStyle);
     int outerW = wr.right - wr.left;
     int outerH = wr.bottom - wr.top;
+    POINT pos = util::CenterOnMonitorOf(owner, outerW, outerH);
 
     HWND hwnd = CreateWindowExW(exStyle, kTextClass, caption, style,
-                                (sw - outerW) / 2, (sh - outerH) / 2, outerW, outerH,
+                                pos.x, pos.y, outerW, outerH,
                                 owner, nullptr, hi, &st);
     if (!hwnd) {
         if (st.staticBrush) DeleteObject(st.staticBrush);

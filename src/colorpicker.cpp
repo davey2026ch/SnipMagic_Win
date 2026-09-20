@@ -575,6 +575,22 @@ bool ColorPicker::Eyedropper(HWND owner, COLORREF& outColor) {
     HINSTANCE hi = GetModuleHandleW(nullptr);
     EnsurePickClasses(hi);
 
+    // 彻底隐藏颜色窗口：SW_HIDE 会触发系统淡出动画（约 200ms），
+    // 截屏会拍到半透明残影。用 DWM Cloak 把窗口立即从屏幕合成中剔除，
+    // 再等 DWM 完成一帧合成后才冻结屏幕。
+    if (owner) {
+        ShowWindow(owner, SW_HIDE);
+        HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
+        if (!dwm) dwm = LoadLibraryW(L"dwmapi.dll");
+        if (dwm) {
+            typedef HRESULT(WINAPI* CloakFn)(HWND, DWORD, LPCVOID, DWORD);
+            auto cloakFn = reinterpret_cast<CloakFn>(GetProcAddress(dwm, "DwmSetWindowAttribute"));
+            BOOL cloak = TRUE;
+            if (cloakFn) cloakFn(owner, 13, &cloak, sizeof(cloak)); // DWMWA_CLOAK
+        }
+        Sleep(250);
+    }
+
     int x = GetSystemMetrics(SM_XVIRTUALSCREEN);
     int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
     int w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
@@ -594,7 +610,6 @@ bool ColorPicker::Eyedropper(HWND owner, COLORREF& outColor) {
         DeleteObject(hbm);
     }
 
-    if (owner) ShowWindow(owner, SW_HIDE);
     HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
                                 kEyeClass, L"",
                                 WS_POPUP | WS_VISIBLE,
@@ -612,6 +627,15 @@ bool ColorPicker::Eyedropper(HWND owner, COLORREF& outColor) {
         ReleaseCapture();
     }
     if (owner) {
+        // 解除 Cloak 再显示窗口
+        HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
+        if (!dwm) dwm = LoadLibraryW(L"dwmapi.dll");
+        if (dwm) {
+            typedef HRESULT(WINAPI* CloakFn)(HWND, DWORD, LPCVOID, DWORD);
+            auto cloakFn = reinterpret_cast<CloakFn>(GetProcAddress(dwm, "DwmSetWindowAttribute"));
+            BOOL cloak = FALSE;
+            if (cloakFn) cloakFn(owner, 13, &cloak, sizeof(cloak));
+        }
         ShowWindow(owner, SW_SHOW);
         SetForegroundWindow(owner);
     }
@@ -640,15 +664,15 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, b
     st.alpha = initialAlpha;
     st.hex = util::ToHex(initial);
 
-    int sw = GetSystemMetrics(SM_CXSCREEN);
-    int sh = GetSystemMetrics(SM_CYSCREEN);
     RECT wr = { 0, 0, kDlgW, kDlgH };
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
     AdjustWindowRectEx(&wr, style, FALSE, WS_EX_TOPMOST);
     int outerW = wr.right - wr.left;
     int outerH = wr.bottom - wr.top;
-    int x = (sw - outerW) / 2;
-    int y = (sh - outerH) / 2;
+    // 弹窗显示在主窗口所在的显示器（多屏时不再固定弹到主屏）
+    POINT pos = util::CenterOnMonitorOf(owner, outerW, outerH);
+    int x = pos.x;
+    int y = pos.y;
 
     HWND hwnd = CreateWindowExW(WS_EX_TOPMOST,
                                 kPickClass, L"选择颜色",

@@ -39,6 +39,17 @@ AnnType ToolToAnnType(Tool t) {
     default: return AnnType::Rect;
     }
 }
+
+// 拖拽生成组件的图形工具：支持「单击用完即退 / 双击锁定连续添加」
+bool IsShapeDrawTool(Tool t) {
+    switch (t) {
+    case Tool::Brush: case Tool::Arrow: case Tool::Line: case Tool::Freehand:
+    case Tool::Rect: case Tool::RoundRect: case Tool::Ellipse:
+    case Tool::FilledRect: case Tool::FilledRoundRect: case Tool::FilledEllipse:
+        return true;
+    default: return false;
+    }
+}
 } // namespace
 
 Canvas& Canvas::Instance() {
@@ -540,7 +551,11 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
             dragMode_ = DragMode::Resize;
             activeHandle_ = h;
             resizeStartBounds_ = {};
+            resizeStartFontSize_ = 0;
             ann->GetBounds(resizeStartBounds_);
+            if (ann->type == AnnType::Text) {
+                resizeStartFontSize_ = static_cast<TextAnn*>(ann)->fontSize;
+            }
             Refresh();
             App::Instance().UpdateStatus();
             return true;
@@ -573,6 +588,16 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
         if (hit >= 0) {
             beginMove(hit);
             return;
+        }
+
+        // 已选中对象：在其选择框范围内（含空心形状内部空白）按住即可拖动位置
+        if (doc_->GetSelected()) {
+            RectF b;
+            doc_->GetSelected()->GetBounds(b);
+            if (util::PtInRectF(b, ix, iy)) {
+                beginMove(doc_->selectedIdx);
+                return;
+            }
         }
 
         if (tool_ == Tool::Select) {
@@ -609,7 +634,7 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
             doc_->selectedIdx = idx;
             // 插入后切到选择工具，方便立刻拖动 / 双击编辑
             App::Instance().SelectTool(Tool::Select);
-            App::Instance().ShowStatusMessage(L"文字已添加：按住拖动挪位置，双击编辑，拖角点调宽高");
+            App::Instance().ShowStatusMessage(L"文字已添加：按住拖动挪位置，双击编辑，拖角点整体放大缩小（字号同步）");
         }
         Refresh();
         return;
@@ -629,6 +654,10 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
         n->selected = true;
         doc_->annotations.push_back(std::move(n));
         doc_->selectedIdx = idx;
+        // 序号用完即退：加一个就回到选择工具（按钮取消选中，序号保持可选）
+        dragMode_ = DragMode::None;
+        App::Instance().SelectTool(Tool::Select);
+        App::Instance().ShowStatusMessage(L"序号已添加：按住拖动挪位置，拖边点调大小");
         Refresh();
         return;
     }
@@ -749,10 +778,25 @@ void Canvas::OnMouseUp(int x, int y) {
             add = sh->rect.Width > 2 || sh->rect.Height > 2;
         }
         if (add) {
+            bool locked = toolLocked_ && IsShapeDrawTool(tool_);
             PushAndAdd(std::move(draft_));
-        } else {
-            draft_.reset();
+            if (locked) {
+                // 锁定连续添加：不出 8 点选择框（避免误导），工具保持选中
+                doc_->ClearSelection();
+                dragMode_ = DragMode::None;
+                Refresh();
+                App::Instance().UpdateStatus();
+                return;
+            }
+            // 单次使用：新组件保持选中（8 点框可调大小/拖动），
+            // 工具切回选择 → 左侧工具栏按钮取消选中
+            dragMode_ = DragMode::None;
+            App::Instance().SelectTool(Tool::Select);
+            App::Instance().UpdateStatus();
+            Refresh();
+            return;
         }
+        draft_.reset();
         dragMode_ = DragMode::None;
         Refresh();
         App::Instance().UpdateStatus();
@@ -919,24 +963,50 @@ void Canvas::ResizeSelected(HandleId h, float ix, float iy) {
     }
     RectF nb = util::NormalizeRectF(l, t, r, bt);
 
-    // 文字框：自由缩放（边点只改宽或高，角点同时改宽高），不锁纵横比
+    // 文字框：
+    // - 四个角点 = 等比放大/缩小，字号随缩放比例自动变化
+    // - 四个边点 = 只调宽或高（排版用），字号不变
     if (sel->type == AnnType::Text) {
-        if (nb.Width < 24.0f) nb.Width = 24.0f;
-        if (nb.Height < 16.0f) nb.Height = 16.0f;
-        // 保持锚点：对边/对角固定
-        float nl = nb.X, nt = nb.Y;
-        switch (h) {
-        case HandleId::NW: nl = b0.X + b0.Width - nb.Width; nt = b0.Y + b0.Height - nb.Height; break;
-        case HandleId::NE: nl = b0.X; nt = b0.Y + b0.Height - nb.Height; break;
-        case HandleId::SE: nl = b0.X; nt = b0.Y; break;
-        case HandleId::SW: nl = b0.X + b0.Width - nb.Width; nt = b0.Y; break;
-        case HandleId::N:  nl = b0.X + (b0.Width - nb.Width) * 0.5f; nt = b0.Y + b0.Height - nb.Height; break;
-        case HandleId::S:  nl = b0.X + (b0.Width - nb.Width) * 0.5f; nt = b0.Y; break;
-        case HandleId::W:  nl = b0.X + b0.Width - nb.Width; nt = b0.Y + (b0.Height - nb.Height) * 0.5f; break;
-        case HandleId::E:  nl = b0.X; nt = b0.Y + (b0.Height - nb.Height) * 0.5f; break;
-        default: break;
+        auto* t = static_cast<TextAnn*>(sel);
+        const bool corner =
+            (h == HandleId::NW || h == HandleId::NE ||
+             h == HandleId::SE || h == HandleId::SW);
+        if (corner && resizeStartFontSize_ > 0 && b0.Height > 1.0f) {
+            float s = nb.Height / b0.Height;
+            float ns = resizeStartFontSize_ * s;
+            if (ns < 8.0f) { ns = 8.0f; s = ns / resizeStartFontSize_; }
+            if (ns > 200.0f) { ns = 200.0f; s = ns / resizeStartFontSize_; }
+            t->fontSize = ns;
+            // 框按同比例缩放，锚点固定在对角
+            float nw = b0.Width * s;
+            float nh = b0.Height * s;
+            float nl = nb.X, nt = nb.Y;
+            switch (h) {
+            case HandleId::NW: nl = b0.X + b0.Width - nw; nt = b0.Y + b0.Height - nh; break;
+            case HandleId::NE: nl = b0.X;                 nt = b0.Y + b0.Height - nh; break;
+            case HandleId::SE: nl = b0.X;                 nt = b0.Y; break;
+            case HandleId::SW: nl = b0.X + b0.Width - nw; nt = b0.Y; break;
+            default: break;
+            }
+            nb = RectF(nl, nt, nw, nh);
+        } else {
+            if (nb.Width < 24.0f) nb.Width = 24.0f;
+            if (nb.Height < 16.0f) nb.Height = 16.0f;
+            // 保持锚点：对边/对角固定
+            float nl = nb.X, nt = nb.Y;
+            switch (h) {
+            case HandleId::NW: nl = b0.X + b0.Width - nb.Width; nt = b0.Y + b0.Height - nb.Height; break;
+            case HandleId::NE: nl = b0.X; nt = b0.Y + b0.Height - nb.Height; break;
+            case HandleId::SE: nl = b0.X; nt = b0.Y; break;
+            case HandleId::SW: nl = b0.X + b0.Width - nb.Width; nt = b0.Y; break;
+            case HandleId::N:  nl = b0.X + (b0.Width - nb.Width) * 0.5f; nt = b0.Y + b0.Height - nb.Height; break;
+            case HandleId::S:  nl = b0.X + (b0.Width - nb.Width) * 0.5f; nt = b0.Y; break;
+            case HandleId::W:  nl = b0.X + b0.Width - nb.Width; nt = b0.Y + (b0.Height - nb.Height) * 0.5f; break;
+            case HandleId::E:  nl = b0.X; nt = b0.Y + (b0.Height - nb.Height) * 0.5f; break;
+            default: break;
+            }
+            nb = RectF(nl, nt, nb.Width, nb.Height);
         }
-        nb = RectF(nl, nt, nb.Width, nb.Height);
     } else {
         if (nb.Width < 2) nb.Width = 2;
         if (nb.Height < 2) nb.Height = 2;

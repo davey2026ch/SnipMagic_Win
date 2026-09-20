@@ -32,6 +32,9 @@ public:
 
     void SetTool(Tool t);
     Tool GetTool() const { return tool_; }
+    // 双击工具栏按钮锁定：连续添加，添加后不切换回选择工具、不显示选择框
+    void SetToolLocked(bool locked) { toolLocked_ = locked; }
+    bool IsToolLocked() const { return toolLocked_; }
 
     void SetDrawColor(COLORREF c) { color_ = c; }
     COLORREF GetDrawColor() const { return color_; }
@@ -95,6 +98,7 @@ private:
     HWND hwnd_ = nullptr;
     Document* doc_ = nullptr;
     Tool tool_ = Tool::Select;
+    bool toolLocked_ = false;
     COLORREF color_ = RGB(255, 0, 0);
     BYTE alpha_ = 255;
     int number_ = 1;
@@ -107,6 +111,7 @@ private:
     std::unique_ptr<Annotation> draft_;
     std::unique_ptr<Annotation> moveBackup_;
     RectF resizeStartBounds_{};
+    float resizeStartFontSize_ = 0; // 文字拖角点缩放：起点字号
     HandleId activeHandle_ = HandleId::None;
 
     void OpenTextEditor(int hitIndex);

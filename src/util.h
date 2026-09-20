@@ -175,8 +175,26 @@ inline COLORREF HSLtoRGB(float h, float s, float l) {
     return RGB(static_cast<BYTE>(r * 255), static_cast<BYTE>(g * 255), static_cast<BYTE>(b * 255));
 }
 
-inline int GetDpiForWindowSafe(HWND hwnd) {
-    UINT dpi = 96;
+// 弹窗定位：以 owner 所在显示器的工作区居中（多屏时弹窗跟主窗口走，不固定在主屏）
+// 返回窗口左上角坐标（屏幕坐标）
+inline POINT CenterOnMonitorOf(HWND owner, int outerW, int outerH) {
+    RECT wa = {};
+    HMONITOR mon = owner ? MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST) : nullptr;
+    MONITORINFO mi = { sizeof(mi) };
+    if (mon && GetMonitorInfoW(mon, &mi)) {
+        wa = mi.rcWork;
+    } else {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    }
+    POINT pt;
+    pt.x = wa.left + ((wa.right - wa.left) - outerW) / 2;
+    pt.y = wa.top + ((wa.bottom - wa.top) - outerH) / 2;
+    if (pt.x < wa.left) pt.x = wa.left;
+    if (pt.y < wa.top) pt.y = wa.top;
+    return pt;
+}
+
+inline int GetDpiForWindowSafe(HWND hwnd) {    UINT dpi = 96;
     // GetDpiForWindow is Win10 1607+
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
     if (user32) {

@@ -464,6 +464,23 @@ int Stitcher::alignCanvasTailToFrame(const FrameData& frame, int stickyTop, int 
     }
     if (outScore) *outScore = best;
     if (bestOff < 0 || best > 30.0) return -1;
+    // 微信类应用：消息之间是大片纯色背景。画布尾若恰好落在纯背景上，
+    // 背景行在帧内处处 avg≈0，严格最小值会锁定最靠上的背景位置，
+    // 导致整段已拼内容被重复追加。对策：匹配区必须含足够多「有特征行」，
+    // 纯背景对齐一律不采信（走保守路径，宁跳帧不重复）。
+    if (!frame.distinctive.empty() && bestOff + K <= frame.h) {
+        int distCount = 0;
+        for (int i = 0; i < K; ++i) {
+            if (frame.distinctive[static_cast<size_t>(bestOff + i)]) ++distCount;
+        }
+        if (distCount < (std::max)(4, K / 4)) {
+#ifdef LC_DEBUG
+            std::fprintf(stdout, "  [align] reject flat tail off=%d dist=%d K=%d\n",
+                         bestOff, distCount, K);
+#endif
+            return -1;
+        }
+    }
     int s = bestOff + K;
     if (s < stickyTop) s = stickyTop;
 #ifdef LC_DEBUG
@@ -577,7 +594,7 @@ bool Stitcher::rowOnCanvasStrict(const FrameData& frame, int y, int* outCanvasY)
 }
 
 int Stitcher::resolveAppendStart(const FrameData& frame, int stickyTop, int e,
-                                 double* outScore) const {
+                                 double* outScore, int anchorDy) const {
     if (outScore) *outScore = 1e9;
     if (e <= stickyTop || frame.pixels.empty() || canvasRows_ < 24) return -1;
 
@@ -591,7 +608,17 @@ int Stitcher::resolveAppendStart(const FrameData& frame, int stickyTop, int e,
         return s;
     }
 
-    // 2) 底部必须是「新」的；接缝处必须能证明上方有「已在画布」的内容
+    // 2) 纯背景尾（微信式页面）：内容定位不可用，但若画布尾恰为锚帧底部
+    //    且本次位移已通过像素校验，可直接用位移推算追加起点
+    if (anchorDy > 0 && tailAtAnchor_) {
+        const int s = e - anchorDy;
+        if (s >= stickyTop && s < e) {
+            if (outScore) *outScore = 20.0;
+            return s;
+        }
+    }
+
+    // 3) 底部必须是「新」的；接缝处必须能证明上方有「已在画布」的内容
     int cy = -1;
     if (rowOnCanvasStrict(frame, e - 2, &cy)) {
         // 底部已在画布 → 没有可靠新增
@@ -624,11 +651,11 @@ int Stitcher::resolveAppendStart(const FrameData& frame, int stickyTop, int e,
 Event Stitcher::appendNewFrom(const FrameData& frame, int s, int e, bool gap) {
     if (e <= s) return Event::NoChange;
     // 保险丝：若 frame[s] 与画布末尾几乎逐像素相同，说明 s 偏小，向后跳，避免重复。
-    // 阈值收到 1.5：真实重复是像素级相同(avg≈0)；相邻但不同的内容行 avg 通常 2~5，
-    // 旧阈值 9.0 会把"相邻相似行"误判为重复跳过，造成 1 行缺口并级联成大段重复。
+    // 阈值 1.5 + 上限 8 行：只兜"对齐差几行"的小偏差。上限太大（旧值 48）会把
+    // 微信式页面上消息之间的成片纯空白误当重复跳过，造成空白被压缩/内容缺失。
     if (canvasRows_ >= 8 && !frame.pixels.empty()) {
         const int stride = width_ * 4;
-        for (int guard = 0; guard < 48 && s < e; ++guard) {
+        for (int guard = 0; guard < 8 && s < e; ++guard) {
             const uint8_t* rf = frame.pixels.data() + static_cast<size_t>(s) * stride;
             const uint8_t* rc = canvas_.data() + static_cast<size_t>(canvasRows_ - 1) * stride;
             double sum = 0.0;
@@ -664,8 +691,9 @@ int Stitcher::trimDuplicateTailMut() {
     const int stride = width_ * 4;
     int removed = 0;
     // 只裁「高度几乎相同」的大块重复；阈值收紧，避免误删相似表格行
-    const int sizes[] = { 64, 40 };
-    for (int bi = 0; bi < 2; ++bi) {
+    // 128 档：微信等大片空白页面可能一次贴出 >64 行的重复段
+    const int sizes[] = { 128, 64, 40 };
+    for (int bi = 0; bi < 3; ++bi) {
         const int B = sizes[bi];
         if (canvasRows_ < B * 2 + 16) continue;
         for (int pass = 0; pass < 2; ++pass) {
@@ -880,6 +908,7 @@ Event Stitcher::Process(const FrameData& frame, double nowSec) {
         stickyBottom_ = 0;
         docOffset_ = 0;
         accEnd_ = frame.h;
+        tailAtAnchor_ = true;
         canvasRows_ = 0;
         // 首帧整段入画布（不含未知 sticky）
         if (!appendChecked(frame, 0, frame.h)) {
@@ -899,6 +928,7 @@ Event Stitcher::Process(const FrameData& frame, double nowSec) {
         }
         anchor_ = frame;
         anchorTime_ = nowSec;
+        tailAtAnchor_ = false; // 画布尾与新锚帧的对应关系已不可信
         return Event::Skipped;
     }
 
@@ -918,6 +948,7 @@ Event Stitcher::Process(const FrameData& frame, double nowSec) {
             if (docOffset_ < 0) docOffset_ = 0;
             anchor_ = frame;
             anchorTime_ = nowSec;
+            tailAtAnchor_ = false; // 内容下移，画布尾不再对应锚帧底部
             return Event::ScrolledUp;
         }
         if (m.kind == MatchResult::Kind::Scrolled && m.dy == 0) {
@@ -954,10 +985,11 @@ Event Stitcher::Process(const FrameData& frame, double nowSec) {
 
         // 核心：必须能证明「画布末尾」落在新帧哪里，否则不追加
         double sc = 1e9;
-        const int s = resolveAppendStart(frame, st, e, &sc);
+        const int s = resolveAppendStart(frame, st, e, &sc, m.dy);
         if (s < 0) {
             ++skipAlignCount_;
             ++suspectSeams_;
+            tailAtAnchor_ = false;
             anchor_ = frame;
             anchorTime_ = nowSec;
             return Event::NeedOverlap;
@@ -973,6 +1005,8 @@ Event Stitcher::Process(const FrameData& frame, double nowSec) {
         if (ev == Event::Appended || ev == Event::Gap) {
             skipAlignCount_ = 0;
         }
+        // 只有正常追加后画布尾才恰好对应锚帧底部（Gap 会插入分隔条，不算）
+        tailAtAnchor_ = (ev == Event::Appended);
         hasAnchor_ = true;
         anchor_ = frame;
         anchorTime_ = nowSec;
@@ -1002,7 +1036,7 @@ bool Stitcher::Finish(const FrameData* last,
             const int e = last->h - stickyBottom_;
             if (e > st && canvasRows_ > 0) {
                 double sc = 1e9;
-                const int s = resolveAppendStart(*last, st, e, &sc);
+                const int s = resolveAppendStart(*last, st, e, &sc, 0);
                 if (s >= 0 && e - s >= kMinNewRows) {
                     appendChecked(*last, s, e);
                     trimDuplicateTailMut();

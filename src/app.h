@@ -15,6 +15,7 @@ struct ToolButton {
     bool toggle = false;
     bool isLeft = false;    // left rail: icon-style
     bool showNumber = false;// number tool shows current value
+    bool locked = false;    // 双击锁定：可连续添加同类组件
     Tool tool = Tool::Select;
 };
 

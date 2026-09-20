@@ -25,6 +25,17 @@ std::wstring g_updateErr;    // 下载失败原因
 
 bool IsDark() { return Settings().IsDarkTheme(); }
 
+// 支持双击锁定的图形工具（拖拽生成组件的一类）
+bool IsLockableDrawTool(Tool t) {
+    switch (t) {
+    case Tool::Brush: case Tool::Arrow: case Tool::Line: case Tool::Freehand:
+    case Tool::Rect: case Tool::RoundRect: case Tool::Ellipse:
+    case Tool::FilledRect: case Tool::FilledRoundRect: case Tool::FilledEllipse:
+        return true;
+    default: return false;
+    }
+}
+
 const wchar_t* kTipClass = L"ScreenshotToolTooltip";
 
 HICON g_appIcon = nullptr;
@@ -395,6 +406,19 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         int idx = HitLeftButton(x, y);
         if (idx >= 0 && leftBtns_[idx].id == ID_TOOL_NUMBER) {
             ShowNumberMenu(leftBtns_[idx].rc.left, leftBtns_[idx].rc.bottom);
+            return 0;
+        }
+        // 双击图形工具按钮：切换锁定（可连续添加）
+        if (idx >= 0 && leftBtns_[idx].toggle && IsLockableDrawTool(leftBtns_[idx].tool)) {
+            leftBtns_[idx].locked = !leftBtns_[idx].locked;
+            if (Canvas::Instance().GetTool() == leftBtns_[idx].tool) {
+                Canvas::Instance().SetToolLocked(leftBtns_[idx].locked);
+            }
+            ShowStatusMessage(leftBtns_[idx].locked
+                ? L"已锁定「" + leftBtns_[idx].tip.substr(0, leftBtns_[idx].tip.find(L'（')) +
+                      L"」：可连续添加，再双击图标解锁"
+                : L"已解锁：添加一个后自动回到选择工具");
+            InvalidateRect(hwnd_, nullptr, FALSE);
         }
         return 0;
     }
@@ -477,6 +501,12 @@ void App::OnCreate() {
 }
 
 void App::BuildToolbars() {
+    // 重建时保留各按钮的锁定状态（设置变更/DPI 变化会走到这里）
+    std::vector<int> lockedIds;
+    for (auto& b : leftBtns_) {
+        if (b.locked) lockedIds.push_back(b.id);
+    }
+
     topBtns_.clear();
     leftBtns_.clear();
 
@@ -499,6 +529,7 @@ void App::BuildToolbars() {
     addTop(ID_CMD_REDO, L"重做");
 
     struct L { int id; const wchar_t* tip; Tool tool; bool toggle; bool num; };
+    const wchar_t* kLockHint = L"（双击锁定连续添加）";
     const L left[] = {
         { ID_TOOL_SELECT,   L"选择（框选区域）", Tool::Select, true, false },
         { ID_TOOL_BRUSH,    L"笔刷（半透明高亮）", Tool::Brush, true, false },
@@ -519,12 +550,15 @@ void App::BuildToolbars() {
     for (auto& item : left) {
         ToolButton b;
         b.id = item.id;
-        b.tip = item.tip;
+        b.tip = IsLockableDrawTool(item.tool)
+                    ? std::wstring(item.tip) + kLockHint
+                    : std::wstring(item.tip);
         b.text = item.num ? std::to_wstring(numberIndex_ + 1) : item.tip;
         b.tool = item.tool;
         b.toggle = item.toggle;
         b.isLeft = true;
         b.showNumber = item.num;
+        b.locked = std::find(lockedIds.begin(), lockedIds.end(), b.id) != lockedIds.end();
         leftBtns_.push_back(b);
     }
 }
@@ -757,7 +791,11 @@ void App::ShowTooltip(int x, int y, const std::wstring& text) {
     ClientToScreen(hwnd_, &pt);
 
     RECT work;
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    // 按悬浮提示所在显示器的工作区收边（多屏时不被主屏边界拉回去）
+    HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { sizeof(mi) };
+    if (GetMonitorInfoW(mon, &mi)) work = mi.rcWork;
+    else SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     if (pt.x + w > work.right) pt.x = x - w - 8;
     if (pt.y + h > work.bottom) pt.y = y - h - 8;
 
@@ -983,6 +1021,24 @@ void App::OnPaint() {
                 g.FillRectangle(&hi, b.rc.left, b.rc.top, bw, bh);
             }
             DrawToolIcon(g, b, b.rc, iconColor, s.themeColor);
+            // 双击锁定标记：图标右下角小锁（主题色，激活/未激活都可见）
+            if (b.locked) {
+                Color lc = ToGpColor(s.themeColor);
+                SolidBrush lb(lc);
+                Pen shackle(lc, 1.5f);
+                REAL bx = static_cast<REAL>(b.rc.right) - 10.0f;
+                REAL by = static_cast<REAL>(b.rc.bottom) - 12.0f;
+                // 锁梁（上半圆，GDI+ 角度顺时针：180°起画 180° 即上半圆）
+                g.DrawArc(&shackle, bx + 0.5f, by - 3.5f, 6.0f, 6.5f, 180.0f, 180.0f);
+                // 锁体
+                GraphicsPath body;
+                body.AddArc(bx, by, 2.4f, 2.4f, 90.0f, 90.0f);
+                body.AddArc(bx + 4.6f, by, 2.4f, 2.4f, 0.0f, 90.0f);
+                body.AddArc(bx + 4.6f, by + 3.1f, 2.4f, 2.4f, 0.0f, -90.0f);
+                body.AddArc(bx, by + 3.1f, 2.4f, 2.4f, 180.0f, 90.0f);
+                body.CloseFigure();
+                g.FillPath(&lb, &body);
+            }
             return;
         }
 
@@ -1490,6 +1546,13 @@ bool App::SaveAllDocs() {
 void App::SelectTool(Tool t) {
     Canvas::Instance().SetTool(t);
     if (t == Tool::Number) Canvas::Instance().SetNumber(numberIndex_ + 1);
+    // 同步锁定状态：锁定中的工具被再次选中时仍保持连续添加
+    for (auto& b : leftBtns_) {
+        if (b.toggle && b.tool == t) {
+            Canvas::Instance().SetToolLocked(b.locked);
+            break;
+        }
+    }
     InvalidateRect(hwnd_, nullptr, FALSE);
     UpdateStatus();
 }

@@ -73,8 +73,9 @@ private:
     int refineDy(const FrameData& anchor, const FrameData& frame, int dy,
                  int top, int bottom) const;
     // 严格判定：从哪一行开始是「画布里还没有」的新内容；失败返回 -1
+    // anchorDy：detect() 得到的锚帧位移（>0 有效），用于纯背景尾的航位推算
     int resolveAppendStart(const FrameData& frame, int stickyTop, int e,
-                           double* outScore) const;
+                           double* outScore, int anchorDy) const;
     bool rowOnCanvasStrict(const FrameData& frame, int y, int* outCanvasY) const;
     int alignCanvasTailToFrame(const FrameData& frame, int stickyTop, int e,
                                double* outScore) const;
@@ -105,6 +106,8 @@ private:
     double gapCooldownUntil_ = 0.0;
     bool capped_ = false;
     bool started_ = false;
+    // 画布末尾是否恰为锚帧 [e-K, e) 内容（追加成功后为真；上滚/跳帧后失效）
+    bool tailAtAnchor_ = false;
 };
 
 } // namespace longstitch
