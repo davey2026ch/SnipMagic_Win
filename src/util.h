@@ -54,7 +54,17 @@ inline std::wstring GetExeDir() {
 }
 
 inline std::wstring GetIniPath() {
-    return GetExeDir() + L"\\截图工具.ini";
+    // 注意：util.h 不引入 version.h（避免循环），新 ini 名在此保持字面量，
+    // 与 version.h 的 APP_INI_NAME 保持一致；改名时两处需同步
+    std::wstring newPath = GetExeDir() + L"\\SnipMagic.ini";
+    // 旧版配置迁移：截图工具.ini → SnipMagic.ini（保留 token 等用户配置）
+    if (GetFileAttributesW(newPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        std::wstring legacy = GetExeDir() + L"\\截图工具.ini";
+        if (GetFileAttributesW(legacy.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            MoveFileW(legacy.c_str(), newPath.c_str());
+        }
+    }
+    return newPath;
 }
 
 inline std::wstring Format(const wchar_t* fmt, ...) {

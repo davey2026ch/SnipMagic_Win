@@ -11,7 +11,7 @@ namespace updater {
 
 // releases/latest：公开仓库无需令牌；仓库无 Release 时返回 404
 inline const wchar_t* kReleasesLatestUrl =
-    L"https://gitee.com/api/v5/repos/mrpu2020/screenshot-tool--win/releases/latest";
+    L"https://gitee.com/api/v5/repos/mrpu2020/SnipMagic_Win/releases/latest";
 
 struct UpdateInfo {
     bool available = false;      // 远端版本比本地新

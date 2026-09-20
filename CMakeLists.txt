@@ -44,7 +44,7 @@ if(MSVC)
     target_compile_definitions(ScreenshotTool PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
     set_target_properties(ScreenshotTool PROPERTIES
         LINK_FLAGS "/MANIFEST:EMBED /MANIFESTINPUT:\"${CMAKE_SOURCE_DIR}/app.manifest\" /SUBSYSTEM:WINDOWS"
-        OUTPUT_NAME "ScreenshotTool"
+        OUTPUT_NAME "SnipMagic"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/dist"
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/dist"
     )

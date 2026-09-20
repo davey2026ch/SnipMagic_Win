@@ -2,12 +2,12 @@
 
 #include <wchar.h>
 
-#define APP_NAME        L"截图工具"
-#define APP_VERSION     L"2.0.0"
-#define APP_VERSION_RC  2,0,0,0
-#define APP_VERSION_STR "2.0.0.0"
+#define APP_NAME        L"截图大师SnipMagic"
+#define APP_VERSION     L"2.1.0"
+#define APP_VERSION_RC  2,1,0,0
+#define APP_VERSION_STR "2.1.0.0"
 #define APP_BUILD_TIME  __DATE__ " " __TIME__
-#define APP_INI_NAME    L"截图工具.ini"
+#define APP_INI_NAME    L"SnipMagic.ini"
 
 // 将 __DATE__/__TIME__（"Sep 19 2026 17:40:12"）格式化为 "2026-09-19 17:40:12"
 inline const wchar_t* AppBuildTimeFormatted() {
