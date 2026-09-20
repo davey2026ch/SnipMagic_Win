@@ -121,7 +121,6 @@ void CompareView::UpdateScrollBars() {
         si.nMax = contentW - 1;
         si.nPage = static_cast<UINT>(rc.right);
         si.nPos = doc_->scrollX;
-        ShowScrollBar(hwnd_, SB_HORZ, TRUE);
         SetScrollInfo(hwnd_, SB_HORZ, &si, TRUE);
         GetScrollInfo(hwnd_, SB_HORZ, &si);
         doc_->scrollX = si.nPos;
@@ -137,7 +136,6 @@ void CompareView::UpdateScrollBars() {
         si.nMax = contentH - 1;
         si.nPage = static_cast<UINT>(rc.bottom);
         si.nPos = doc_->scrollY;
-        ShowScrollBar(hwnd_, SB_VERT, TRUE);
         SetScrollInfo(hwnd_, SB_VERT, &si, TRUE);
         GetScrollInfo(hwnd_, SB_VERT, &si);
         doc_->scrollY = si.nPos;
@@ -154,6 +152,19 @@ void CompareView::ApplyScroll(int scrollX, int scrollY) {
 
 void CompareView::NotifyAppScrolled() {
     App::Instance().OnComparePaneScrolled();
+}
+
+void CompareView::OnCustomScroll(int bar, int pos) {
+    SCROLLINFO si = { sizeof(si), SIF_POS };
+    si.nPos = pos;
+    SetScrollInfo(hwnd_, bar, &si, TRUE);
+    GetScrollInfo(hwnd_, bar, &si);
+    if (doc_) {
+        if (bar == SB_VERT) doc_->scrollY = si.nPos;
+        else doc_->scrollX = si.nPos;
+    }
+    Refresh();
+    NotifyAppScrolled();
 }
 
 void CompareView::OnScroll(int bar, WPARAM wParam) {
@@ -261,6 +272,9 @@ void CompareView::OnPaint() {
     g.FillRectangle(&tagBr, 0, 0, 96, 22);
     g.DrawString(tag.c_str(), -1, &tagFont, PointF(8, 3), &tagFg);
 
+    // 自绘滚动条（替代系统原生条，支持暗色主题）
+    scrollui::Draw(g, scrollui::Compute(hwnd_, rc), vsb_, hsb_, Settings().IsDarkTheme());
+
     BitBlt(hdc, 0, 0, w, h, memDc_, 0, 0, SRCCOPY);
     EndPaint(hwnd_, &ps);
 }
@@ -283,6 +297,26 @@ LRESULT CompareView::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_PAINT: OnPaint(); return 0;
     case WM_SIZE: UpdateScrollBars(); Refresh(); return 0;
+    case WM_LBUTTONDOWN: {
+        SetCapture(hwnd);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        auto gm = scrollui::Compute(hwnd, rc);
+        if (scrollui::Down(hwnd, gm, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam),
+                           vsb_, hsb_,
+                           [this](int bar, int pos) { OnCustomScroll(bar, pos); })) {
+            return 0;
+        }
+        return 0;
+    }
+    case WM_MOUSEMOVE:
+        scrollui::Move(hwnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam),
+                       vsb_, hsb_,
+                       [this](int bar, int pos) { OnCustomScroll(bar, pos); });
+        return 0;
+    case WM_LBUTTONUP:
+        if (scrollui::Up(vsb_, hsb_)) ReleaseCapture();
+        return 0;
     case WM_HSCROLL: OnScroll(SB_HORZ, wParam); return 0;
     case WM_VSCROLL: OnScroll(SB_VERT, wParam); return 0;
     case WM_MOUSEWHEEL: {

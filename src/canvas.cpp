@@ -103,15 +103,30 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_PAINT: OnPaint(); return 0;
     case WM_SIZE: UpdateScrollBars(); Refresh(); return 0;
-    case WM_LBUTTONDOWN:
+    case WM_LBUTTONDOWN: {
         SetFocus(hwnd);
         SetCapture(hwnd);
+        // 自绘滚动条优先命中（命中后事件不进入画布编辑逻辑）
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        auto gm = scrollui::Compute(hwnd, rc);
+        if (scrollui::Down(hwnd, gm, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam),
+                           vsb_, hsb_,
+                           [this](int bar, int pos) { OnCustomScroll(bar, pos); })) {
+            return 0;
+        }
         OnMouseDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), false);
         return 0;
+    }
     case WM_RBUTTONDOWN:
         OnMouseDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), true);
         return 0;
     case WM_MOUSEMOVE:
+        if (scrollui::Move(hwnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam),
+                           vsb_, hsb_,
+                           [this](int bar, int pos) { OnCustomScroll(bar, pos); })) {
+            return 0;
+        }
         if (pickingColor_) {
             // global eyedropper live sample handled in colorpicker
             return 0;
@@ -119,6 +134,10 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         OnMouseMove(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
     case WM_LBUTTONUP:
+        if (scrollui::Up(vsb_, hsb_)) {
+            ReleaseCapture();
+            return 0;
+        }
         ReleaseCapture();
         OnMouseUp(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
@@ -278,6 +297,19 @@ void Canvas::Refresh() {
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void Canvas::OnCustomScroll(int bar, int pos) {
+    SCROLLINFO si = { sizeof(si), SIF_POS };
+    si.nPos = pos;
+    SetScrollInfo(hwnd_, bar, &si, TRUE);
+    GetScrollInfo(hwnd_, bar, &si);
+    if (doc_) {
+        if (bar == SB_VERT) doc_->scrollY = si.nPos;
+        else doc_->scrollX = si.nPos;
+    }
+    Refresh();
+    App::Instance().OnMainCanvasScrolled();
+}
+
 void Canvas::UpdateScrollBars() {
     if (!hwnd_) return;
 
@@ -312,7 +344,6 @@ void Canvas::UpdateScrollBars() {
         si.nMax = contentW - 1;
         si.nPage = static_cast<UINT>(rc.right);
         si.nPos = doc_->scrollX;
-        ShowScrollBar(hwnd_, SB_HORZ, TRUE);
         SetScrollInfo(hwnd_, SB_HORZ, &si, TRUE);
         GetScrollInfo(hwnd_, SB_HORZ, &si);
         doc_->scrollX = si.nPos;
@@ -328,7 +359,6 @@ void Canvas::UpdateScrollBars() {
         si.nMax = contentH - 1;
         si.nPage = static_cast<UINT>(rc.bottom);
         si.nPos = doc_->scrollY;
-        ShowScrollBar(hwnd_, SB_VERT, TRUE);
         SetScrollInfo(hwnd_, SB_VERT, &si, TRUE);
         GetScrollInfo(hwnd_, SB_VERT, &si);
         doc_->scrollY = si.nPos;
@@ -458,6 +488,9 @@ void Canvas::OnPaint() {
             g.DrawString(tip, -1, &font, PointF(static_cast<REAL>(tx + 6), static_cast<REAL>(ty + 2)), &fg);
         }
     }
+
+    // 自绘滚动条（替代系统原生条，支持暗色主题）
+    scrollui::Draw(g, scrollui::Compute(hwnd_, rc), vsb_, hsb_, Settings().IsDarkTheme());
 
     BitBlt(hdc, 0, 0, w, h, memDc_, 0, 0, SRCCOPY);
     EndPaint(hwnd_, &ps);

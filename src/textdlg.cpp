@@ -2,6 +2,7 @@
 #include "annotation.h"
 #include "colorpicker.h"
 #include "settings.h"
+#include "darkui.h"
 
 using namespace Gdiplus;
 
@@ -33,7 +34,6 @@ struct TextDlgState {
     HWND colorBtn = nullptr;
     HWND bgColorBtn = nullptr;
     HWND bgColorLabel = nullptr;
-    HBRUSH staticBrush = nullptr;
     bool done = false;
 };
 
@@ -87,16 +87,12 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         st->hwnd = hwnd;
         return TRUE;
     }
-    case WM_CTLCOLORSTATIC: {
-        HDC hdc = reinterpret_cast<HDC>(wParam);
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, RGB(40, 40, 40));
-        if (!st || !st->staticBrush) {
-            static HBRUSH br = CreateSolidBrush(RGB(250, 250, 250));
-            return reinterpret_cast<LRESULT>(br);
-        }
-        return reinterpret_cast<LRESULT>(st->staticBrush);
-    }
+    case WM_ERASEBKGND:
+        return darkui::EraseBg(hwnd, reinterpret_cast<HDC>(wParam));
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX:
+        return darkui::CtlColor(msg, reinterpret_cast<HDC>(wParam));
     case WM_COMMAND: {
         if (!st) return 0;
         int id = LOWORD(wParam);
@@ -184,7 +180,7 @@ void EnsureClass(HINSTANCE hi) {
     wc.lpfnWndProc = TextDlgProc;
     wc.hInstance = hi;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(static_cast<INT_PTR>(COLOR_WINDOW + 1));
+    wc.hbrBackground = nullptr; // 背景由 WM_ERASEBKGND 按主题绘制
     wc.hIcon = g_blankIcon;
     wc.hIconSm = g_blankIcon;
     wc.lpszClassName = kTextClass;
@@ -206,7 +202,6 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
     st.alpha = existing ? existing->style.alpha : Settings().drawAlpha;
     // 背景色默认值与文字颜色默认值保持一致
     st.bgColor = existing ? existing->bgColor : initialColor;
-    st.staticBrush = CreateSolidBrush(RGB(250, 250, 250));
 
     // 弹窗显示在主窗口所在的显示器（多屏时不再固定弹到主屏）
     const wchar_t* caption = existing ? L"编辑文字" : L"插入文字";
@@ -223,9 +218,9 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
                                 pos.x, pos.y, outerW, outerH,
                                 owner, nullptr, hi, &st);
     if (!hwnd) {
-        if (st.staticBrush) DeleteObject(st.staticBrush);
         return st.result;
     }
+    darkui::DarkTitleBar(hwnd);
     SetWindowTextW(hwnd, caption);
     // 标题栏不显示图标，只显示文字
     SendMessageW(hwnd, WM_SETICON, ICON_BIG, 0);
@@ -302,6 +297,7 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
 
     UpdateBgColorVisibility(&st);
     RefreshSwatches(&st);
+    darkui::ThemeChildren(hwnd);
 
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
@@ -318,6 +314,5 @@ TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* ex
         }
     }
     if (font) DeleteObject(font);
-    if (st.staticBrush) DeleteObject(st.staticBrush);
     return st.result;
 }

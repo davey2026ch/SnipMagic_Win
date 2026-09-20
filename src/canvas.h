@@ -1,6 +1,7 @@
 #pragma once
 #include "util.h"
 #include "document.h"
+#include "scrollui.h"
 
 enum class Tool {
     Select,
@@ -51,6 +52,8 @@ public:
 
     void Refresh();
     void UpdateScrollBars();
+    // 自绘滚动条（scrollui）：把新滚动位置写回 ScrollInfo/文档
+    void OnCustomScroll(int bar, int pos);
 
     // image <-> client
     void ClientToImage(int cx, int cy, float& ix, float& iy) const;
@@ -124,4 +127,7 @@ private:
     HBITMAP memBm_ = nullptr;
     int memW_ = 0, memH_ = 0;
     void EnsureBackbuffer(int w, int h);
+
+    // 覆盖式自绘滚动条状态（替代系统原生滚动条，支持暗色）
+    scrollui::State vsb_, hsb_;
 };

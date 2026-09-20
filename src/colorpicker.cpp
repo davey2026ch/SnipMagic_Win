@@ -1,5 +1,6 @@
 #include "colorpicker.h"
 #include "settings.h"
+#include "darkui.h"
 
 using namespace Gdiplus;
 
@@ -362,13 +363,12 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         st->hwnd = hwnd;
         return TRUE;
     }
-    case WM_CTLCOLORSTATIC: {
-        HDC hdc = reinterpret_cast<HDC>(wParam);
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, RGB(40, 40, 40));
-        static HBRUSH br = CreateSolidBrush(RGB(250, 250, 250));
-        return reinterpret_cast<LRESULT>(br);
-    }
+    case WM_ERASEBKGND:
+        return darkui::EraseBg(hwnd, reinterpret_cast<HDC>(wParam));
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX:
+        return darkui::CtlColor(msg, reinterpret_cast<HDC>(wParam));
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
@@ -378,7 +378,7 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         HGDIOBJ old = SelectObject(mem, bm);
 
         Graphics g(mem);
-        SolidBrush bg(ToGpColor(RGB(250, 250, 250)));
+        SolidBrush bg(ToGpColor(darkui::DlgBg()));
         g.FillRectangle(&bg, 0, 0, rc.right, rc.bottom);
 
         if (st) {
@@ -387,7 +387,8 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
             FontFamily family(L"Microsoft YaHei");
             Font font(&family, 13, FontStyleRegular, UnitPixel);
-            SolidBrush fg(Color(255, 30, 30, 30)); // 纯文字，无背景
+            COLORREF tcol = darkui::TextCol();
+            SolidBrush fg(Color(255, GetRValue(tcol), GetGValue(tcol), GetBValue(tcol))); // 纯文字，无背景
 
             // 右上角小色块预览（不遮挡左侧标签）
             SolidBrush pv(ToGpColor(st->Current(), static_cast<BYTE>(st->alpha)));
@@ -680,6 +681,7 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, b
                                 x, y, outerW, outerH,
                                 owner, nullptr, hi, &st);
     if (!hwnd) return st.result;
+    darkui::DarkTitleBar(hwnd);
     SetWindowTextW(hwnd, L"选择颜色");
     if (g_cpBlankIcon) {
         SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_cpBlankIcon));
@@ -740,6 +742,8 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, b
         for (int i = 0; i < 5; ++i)
             SendMessageW(GetDlgItem(hwnd, IDC_EDIT_BASE + i), WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
+
+    darkui::ThemeChildren(hwnd);
 
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);

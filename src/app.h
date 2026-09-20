@@ -128,6 +128,8 @@ private:
     std::wstring hoverInfo_;
     float hoverIx_ = 0, hoverIy_ = 0;
     bool hasHover_ = false;
+    // 暗色主题下状态栏四段文字（SBT_OWNERDRAW 需要稳定的字符串指针）
+    std::wstring statusPart_[4];
 
     // layout
     int topH_ = 48;

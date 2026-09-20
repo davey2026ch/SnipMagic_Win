@@ -4,6 +4,7 @@
 #include "app.h"
 #include "util.h"
 #include "updater.h"
+#include "darkui.h"
 #include <thread>
 #include <memory>
 
@@ -103,9 +104,9 @@ void DrawEyeButton(DRAWITEMSTRUCT* dis, bool shown) {
     RECT rc = dis->rcItem;
     int w = rc.right - rc.left;
     int h = rc.bottom - rc.top;
-    SolidBrush bg(Color(255, 245, 245, 245));
+    SolidBrush bg(ToGpColor(darkui::DlgBg()));
     g.FillRectangle(&bg, 0, 0, w, h);
-    Pen border(Color(255, 180, 180, 180), 1);
+    Pen border(ToGpColor(Settings().BorderColor()), 1);
     g.DrawRectangle(&border, 0, 0, w - 1, h - 1);
 
     g.SetSmoothingMode(SmoothingModeAntiAlias);
@@ -113,7 +114,8 @@ void DrawEyeButton(DRAWITEMSTRUCT* dis, bool shown) {
     REAL cy = h * 0.5f;
     REAL ew = (std::min)(w, h) * 0.38f;
     REAL eh = (std::min)(w, h) * 0.22f;
-    Pen eye(Color(255, 60, 60, 60), 1.4f);
+    COLORREF tcol = darkui::TextCol();
+    Pen eye(Color(255, GetRValue(tcol), GetGValue(tcol), GetBValue(tcol)), 1.4f);
     // almond eye outline
     GraphicsPath path;
     path.AddBezier(cx - ew, cy, cx - ew * 0.4f, cy - eh * 1.6f,
@@ -122,12 +124,12 @@ void DrawEyeButton(DRAWITEMSTRUCT* dis, bool shown) {
                    cx - ew * 0.4f, cy + eh * 1.6f, cx - ew, cy);
     g.DrawPath(&eye, &path);
     if (shown) {
-        SolidBrush pupil(Color(255, 40, 40, 40));
+        SolidBrush pupil(ToGpColor(tcol));
         g.FillEllipse(&pupil, cx - eh * 0.55f, cy - eh * 0.55f, eh * 1.1f, eh * 1.1f);
     } else {
-        Pen slash(Color(255, 60, 60, 60), 1.4f);
+        Pen slash(ToGpColor(tcol), 1.4f);
         g.DrawLine(&slash, cx - ew * 0.85f, cy + eh * 0.9f, cx + ew * 0.85f, cy - eh * 0.9f);
-        SolidBrush pupil(Color(255, 40, 40, 40));
+        SolidBrush pupil(ToGpColor(tcol));
         g.FillEllipse(&pupil, cx - eh * 0.45f, cy - eh * 0.45f, eh * 0.9f, eh * 0.9f);
     }
 }
@@ -136,6 +138,34 @@ void TogglePassword(HWND edit, bool show) {
     if (!edit) return;
     SendMessageW(edit, EM_SETPASSWORDCHAR, show ? 0 : static_cast<WPARAM>(L'•'), 0);
     InvalidateRect(edit, nullptr, TRUE);
+}
+
+// 主题下拉框箭头区域补画：系统主题画不出深色的下拉箭头按钮
+LRESULT CALLBACK ThemeComboProc(HWND h, UINT m, WPARAM w, LPARAM l,
+                                UINT_PTR, DWORD_PTR) {
+    LRESULT r = DefSubclassProc(h, m, w, l);
+    if (m == WM_PAINT && darkui::Dark()) {
+        RECT rc;
+        GetClientRect(h, &rc);
+        int bw = rc.bottom - rc.top;
+        if (bw < 12) bw = 12;
+        HDC hdc = GetDC(h);
+        RECT btn = { rc.right - bw, rc.top, rc.right, rc.bottom };
+        HBRUSH br = CreateSolidBrush(RGB(32, 32, 32));
+        FillRect(hdc, &btn, br);
+        DeleteObject(br);
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(160, 160, 160));
+        HGDIOBJ old = SelectObject(hdc, pen);
+        int cx = btn.left + bw / 2;
+        int cy = (rc.top + rc.bottom) / 2;
+        MoveToEx(hdc, cx - 4, cy - 2, nullptr);
+        LineTo(hdc, cx, cy + 2);
+        LineTo(hdc, cx + 4, cy - 2);
+        SelectObject(hdc, old);
+        DeleteObject(pen);
+        ReleaseDC(h, hdc);
+    }
+    return r;
 }
 
 LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -148,13 +178,12 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         st->hwnd = hwnd;
         return TRUE;
     }
-    case WM_CTLCOLORSTATIC: {
-        HDC hdc = reinterpret_cast<HDC>(wParam);
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, RGB(40, 40, 40));
-        static HBRUSH br = CreateSolidBrush(RGB(250, 250, 250));
-        return reinterpret_cast<LRESULT>(br);
-    }
+    case WM_ERASEBKGND:
+        return darkui::EraseBg(hwnd, reinterpret_cast<HDC>(wParam));
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX:
+        return darkui::CtlColor(msg, reinterpret_cast<HDC>(wParam));
     case WM_GETICON:
         // 标题栏不显示图标
         return 0;
@@ -253,9 +282,53 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         EndPaint(hwnd, &ps);
         return 0;
     }
+    case WM_MEASUREITEM: {
+        // 主题下拉框自绘条目高度
+        auto* mis = reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
+        mis->itemHeight = MulDiv(22, util::GetDpiForWindowSafe(hwnd), 96);
+        return TRUE;
+    }
     case WM_DRAWITEM: {
         auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
         if (!dis) return 0;
+        if (st && dis->CtlID == IDC_THEME) {
+            // 主题下拉框：条目 = 跟随系统/明亮/暗色；闭合态与下拉列表都画成主题色
+            bool dark = darkui::Dark();
+            bool inList = (dis->itemState & ODS_COMBOBOXEDIT) == 0;
+            bool selected = (dis->itemState & ODS_SELECTED) != 0;
+            COLORREF bgc = (selected && inList)
+                               ? (dark ? RGB(60, 60, 60) : RGB(229, 229, 229))
+                               : (dark ? RGB(32, 32, 32) : RGB(255, 255, 255));
+            Graphics g(dis->hDC);
+            SolidBrush bg(ToGpColor(bgc));
+            g.FillRectangle(&bg, dis->rcItem.left, dis->rcItem.top,
+                            dis->rcItem.right - dis->rcItem.left,
+                            dis->rcItem.bottom - dis->rcItem.top);
+            const wchar_t* txt = L"";
+            switch (dis->itemID) {
+            case 0: txt = L"跟随系统"; break;
+            case 1: txt = L"明亮"; break;
+            case 2: txt = L"暗色"; break;
+            }
+            HDC hdc = dis->hDC;
+            HFONT hf = reinterpret_cast<HFONT>(
+                SendMessageW(GetDlgItem(hwnd, IDC_THEME), WM_GETFONT, 0, 0));
+            HGDIOBJ oldf = hf ? SelectObject(hdc, hf) : nullptr;
+            SIZE sz = {};
+            GetTextExtentPoint32W(hdc, txt, static_cast<int>(wcslen(txt)), &sz);
+            if (oldf) SelectObject(hdc, oldf);
+            COLORREF tcol = darkui::TextCol();
+            SolidBrush fg(ToGpColor(tcol));
+            FontFamily fam(L"Microsoft YaHei");
+            Font fnt(&fam, 13, FontStyleRegular, UnitPixel);
+            g.DrawString(txt, -1, &fnt,
+                         PointF(static_cast<REAL>(dis->rcItem.left + 6),
+                                static_cast<REAL>(dis->rcItem.top +
+                                    (dis->rcItem.bottom - dis->rcItem.top - 18) / 2)),
+                         &fg);
+            (void)sz;
+            return TRUE;
+        }
         if (st && dis->CtlID == IDC_THEMECOLOR) {
             Graphics g(dis->hDC);
             SolidBrush br(ToGpColor(st->themeColor));
@@ -343,7 +416,7 @@ void EnsureClass(HINSTANCE hi) {
     wc.lpfnWndProc = DlgProc;
     wc.hInstance = hi;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(static_cast<INT_PTR>(COLOR_WINDOW + 1));
+    wc.hbrBackground = nullptr; // 背景由 WM_ERASEBKGND 按主题绘制
     wc.hIcon = nullptr;
     wc.hIconSm = nullptr;
     wc.lpszClassName = kClass;
@@ -376,6 +449,7 @@ bool SettingsDialog::Show(HWND owner) {
                                 pos.x, pos.y, outerW, outerH,
                                 owner, nullptr, hi, &st);
     if (!hwnd) return false;
+    darkui::DarkTitleBar(hwnd);
     SetWindowTextW(hwnd, L"设置");
     // 去掉标题栏图标（大/小 + 窗口类）
     SendMessageW(hwnd, WM_SETICON, ICON_BIG, 0);
@@ -411,10 +485,13 @@ bool SettingsDialog::Show(HWND owner) {
     y += 42;
 
     label(L"主题", 20, y);
+    // 自绘下拉框：暗色下系统主题无法把 ComboBox 画成深色，只能自己画
     HWND theme = CreateWindowW(L"COMBOBOX", L"",
-                               WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+                               WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST |
+                                   CBS_OWNERDRAWFIXED,
                                140, y - 3, 300, 160, hwnd,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_THEME)), hi, nullptr);
+    SetWindowSubclass(theme, ThemeComboProc, 1, 0);
     SendMessageW(theme, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     SendMessageW(theme, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"跟随系统"));
     SendMessageW(theme, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"明亮"));
@@ -516,6 +593,8 @@ bool SettingsDialog::Show(HWND owner) {
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CANCEL)), hi, nullptr);
     SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+
+    darkui::ThemeChildren(hwnd);
 
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);

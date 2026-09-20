@@ -8,6 +8,8 @@ add_executable(ScreenshotTool WIN32
     src/main.cpp
     src/util.h
     src/version.h
+    src/darkui.h
+    src/scrollui.h
     src/settings.h
     src/settings.cpp
     src/annotation.h

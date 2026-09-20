@@ -8,6 +8,7 @@
 #include "longcapture.h"
 #include "version.h"
 #include "updater.h"
+#include "darkui.h"
 #include <winuser.h>
 #include <thread>
 
@@ -65,6 +66,30 @@ void RemoveHotkeyHook() {
         UnhookWindowsHookEx(reinterpret_cast<HHOOK>(g_kbHook));
         g_kbHook = nullptr;
     }
+}
+
+// 暗色主题：状态栏右下角的系统大小手柄是浅色的，绘制后补画成深色
+LRESULT CALLBACK StatusGripProc(HWND h, UINT m, WPARAM w, LPARAM l,
+                                UINT_PTR, DWORD_PTR) {
+    LRESULT r = DefSubclassProc(h, m, w, l);
+    if (m == WM_PAINT && IsDark()) {
+        RECT rc;
+        GetClientRect(h, &rc);
+        HDC hdc = GetDC(h);
+        RECT grip = { rc.right - 22, rc.top, rc.right, rc.bottom };
+        FillRect(hdc, &grip, darkui::BgBrush());
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(95, 95, 95));
+        HGDIOBJ old = SelectObject(hdc, pen);
+        int cx = rc.right - 4, cy = rc.bottom - 4;
+        for (int i = 0; i < 3; ++i) {
+            MoveToEx(hdc, cx - i * 5, cy, nullptr);
+            LineTo(hdc, cx, cy - i * 5);
+        }
+        SelectObject(hdc, old);
+        DeleteObject(pen);
+        ReleaseDC(h, hdc);
+    }
+    return r;
 }
 
 LRESULT CALLBACK HotkeyKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -420,6 +445,75 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         return 0;
     }
+    case WM_MEASUREITEM: {
+        // 序号弹出菜单的自绘条目尺寸：宽度贴合 1-2 位数字，不再撑满旧固定值
+        auto* mis = reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
+        mis->itemWidth = MulDiv(44, dpi_, 96);
+        mis->itemHeight = MulDiv(26, dpi_, 96);
+        return TRUE;
+    }
+    case WM_DRAWITEM: {
+        auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+        if (!dis) return DefWindowProcW(hwnd, msg, wParam, lParam);
+        // 暗色主题：状态栏四段文字自绘（SBT_OWNERDRAW）
+        if (dis->hwndItem == status_) {
+            int part = static_cast<int>(dis->itemID);
+            if (part < 0 || part >= 4) return TRUE;
+            RECT rc = dis->rcItem;
+            HDC hdc = dis->hDC;
+            bool dark = darkui::Dark();
+            HBRUSH bg = CreateSolidBrush(dark ? RGB(45, 45, 45) : RGB(240, 240, 240));
+            FillRect(hdc, &rc, bg);
+            DeleteObject(bg);
+            if (part > 0) {
+                RECT sep = { rc.left, rc.top, rc.left + 1, rc.bottom };
+                HBRUSH sepbr = CreateSolidBrush(dark ? RGB(70, 70, 70)
+                                                     : RGB(200, 200, 200));
+                FillRect(hdc, &sep, sepbr);
+                DeleteObject(sepbr);
+            }
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, dark ? RGB(230, 230, 230) : RGB(30, 30, 30));
+            HFONT hf = reinterpret_cast<HFONT>(
+                SendMessageW(status_, WM_GETFONT, 0, 0));
+            HGDIOBJ oldf = hf ? SelectObject(hdc, hf) : nullptr;
+            RECT trc = { rc.left + 8, rc.top, rc.right, rc.bottom };
+            DrawTextW(hdc, statusPart_[part].c_str(), -1, &trc,
+                      DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+            if (oldf) SelectObject(hdc, oldf);
+            return TRUE;
+        }
+        // 序号弹出菜单条目：暗色下深底浅字，当前序号用主题色标记
+        if (dis->CtlID != 0) return DefWindowProcW(hwnd, msg, wParam, lParam);
+        int num = static_cast<int>(dis->itemData);
+        if (num < 1 || num > 20) return DefWindowProcW(hwnd, msg, wParam, lParam);
+        bool dark = darkui::Dark();
+        bool sel = (dis->itemState & ODS_SELECTED) != 0;
+        bool checked = num == numberIndex_ + 1;
+        RECT rc = dis->rcItem;
+        Graphics g(dis->hDC);
+        COLORREF bgc = sel ? (dark ? RGB(60, 60, 60) : RGB(229, 229, 229))
+                           : (dark ? RGB(45, 45, 45) : RGB(250, 250, 250));
+        SolidBrush bg(ToGpColor(bgc));
+        g.FillRectangle(&bg, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
+        if (checked) {
+            // 当前序号：左侧主题色竖条
+            COLORREF accent = Settings().themeColor;
+            SolidBrush bar(ToGpColor(accent));
+            g.FillRectangle(&bar, rc.left, rc.top + 3, MulDiv(3, dpi_, 96),
+                            rc.bottom - rc.top - 6);
+        }
+        FontFamily fam(L"Segoe UI");
+        Font fnt(&fam, 12, FontStyleRegular, UnitPixel);
+        COLORREF tcol = checked ? Settings().themeColor : darkui::TextCol();
+        SolidBrush fg(ToGpColor(tcol));
+        wchar_t buf[16];
+        swprintf_s(buf, L"%d", num);
+        PointF rf(static_cast<REAL>(rc.left + MulDiv(14, dpi_, 96)),
+                  static_cast<REAL>(rc.top + (rc.bottom - rc.top - 18) / 2 + 1));
+        g.DrawString(buf, -1, &fnt, rf, &fg);
+        return TRUE;
+    }
     case WM_ERASEBKGND:
         return 1;
     case WM_CLOSE:
@@ -491,6 +585,7 @@ void App::OnCreate() {
     status_ = CreateWindowExW(0, STATUSCLASSNAMEW, L"",
                               WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
                               0, 0, 0, 0, hwnd_, nullptr, hi_, nullptr);
+    SetWindowSubclass(status_, StatusGripProc, 1, 0);
     SelectTool(Tool::Select);
     ApplyTheme();
     UpdateStatus();
@@ -823,11 +918,15 @@ void App::HideTooltip() {
 
 void App::ShowNumberMenu(int x, int y) {
     HMENU menu = CreatePopupMenu();
+    // 主题化背景（MIM_BACKGROUND），配合自绘条目实现暗色弹出菜单
+    MENUINFO mi = { sizeof(mi) };
+    mi.fMask = MIM_BACKGROUND;
+    mi.hbrBack = darkui::BgBrush();
+    SetMenuInfo(menu, &mi);
     for (int i = 1; i <= 20; ++i) {
-        wchar_t buf[16];
-        swprintf_s(buf, L"%d", i);
-        UINT flags = MF_STRING | (i == numberIndex_ + 1 ? MF_CHECKED : 0);
-        AppendMenuW(menu, flags, ID_NUM_BASE + i - 1, buf);
+        // 自绘条目：itemData = 序号值 1..20
+        AppendMenuW(menu, MF_OWNERDRAW, ID_NUM_BASE + i - 1,
+                    reinterpret_cast<LPCWSTR>(static_cast<INT_PTR>(i)));
     }
     POINT pt = { x, y };
     ClientToScreen(hwnd_, &pt);
@@ -956,8 +1055,15 @@ void App::OnSize() {
 
 void App::ApplyTheme() {
     if (!hwnd_) return;
+    // 主窗口标题栏跟随主题（暗色 = DWM 深色标题栏）
+    darkui::DarkTitleBar(hwnd_);
     InvalidateRect(hwnd_, nullptr, TRUE);
     Canvas::Instance().Refresh();
+    if (status_) {
+        // 主题切换后重设状态栏文字（暗色走 SBT_OWNERDRAW 自绘）并重绘
+        UpdateStatus();
+        InvalidateRect(status_, nullptr, TRUE);
+    }
 }
 
 Document* App::ActiveDoc() {
@@ -1686,10 +1792,16 @@ void App::UpdateStatus() {
         p2 = L"无文档";
         p4 = L"颜色 " + util::ToHex(Canvas::Instance().GetDrawColor());
     }
-    SendMessageW(status_, SB_SETTEXTW, 0, reinterpret_cast<LPARAM>(p1.c_str()));
-    SendMessageW(status_, SB_SETTEXTW, 1, reinterpret_cast<LPARAM>(p2.c_str()));
-    SendMessageW(status_, SB_SETTEXTW, 2, reinterpret_cast<LPARAM>(p3.c_str()));
-    SendMessageW(status_, SB_SETTEXTW, 3, reinterpret_cast<LPARAM>(p4.c_str()));
+    // 暗色主题：状态栏改由主窗口自绘（SBT_OWNERDRAW），浅色保持系统外观
+    statusPart_[0] = p1;
+    statusPart_[1] = p2;
+    statusPart_[2] = p3;
+    statusPart_[3] = p4;
+    UINT flag = IsDark() ? SBT_OWNERDRAW : 0;
+    for (int i = 0; i < 4; ++i) {
+        SendMessageW(status_, SB_SETTEXTW, static_cast<WPARAM>(i | flag),
+                     reinterpret_cast<LPARAM>(statusPart_[i].c_str()));
+    }
 }
 
 void App::ShowStatusMessage(const std::wstring& msg) {
