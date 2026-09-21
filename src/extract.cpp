@@ -1984,7 +1984,8 @@ void RunExtractFlow(HWND owner, Document* doc) {
     }
 
     // 有框选区域时只提取选区内容（精确控制）；无框选但选中了浮动图片图层时，
-    // 以该图层当前位置为提取范围——与人眼所见一致。无选区保持整图提取。
+    // 直接用该图层自己的位图作为提取源（像素级精确，与合成裁剪等效但无边缘混入）。
+    // 两者都没有时整图提取——务必在状态栏说明范围，用户点过画布导致选中丢失时能自查。
     //（提取是只读操作，合成渲染本就包含浮动图层，无需把图层烙进底图）
     std::unique_ptr<Bitmap> source;
     bool regionFromSelection = false;
@@ -1993,13 +1994,19 @@ void RunExtractFlow(HWND owner, Document* doc) {
         if (!doc->GetRegion(rx, ry, rw, rh)) {
             Annotation* sel = doc->GetSelected();
             if (sel && sel->type == AnnType::Image) {
-                RectF b;
-                sel->GetBounds(b);
-                doc->SetRegion(b.X, b.Y, b.X + b.Width, b.Y + b.Height);
-                regionFromSelection = true;
+                auto* ia = static_cast<ImageAnn*>(sel);
+                if (ia->image) {
+                    source = std::unique_ptr<Bitmap>(
+                        ia->image->Clone(0, 0, ia->image->GetWidth(), ia->image->GetHeight(),
+                                         PixelFormat32bppARGB));
+                    App::Instance().ShowStatusMessage(util::Format(
+                        L"已选中图层：只提取该图层内容 %d×%d",
+                        ia->image->GetWidth(), ia->image->GetHeight()));
+                }
+                regionFromSelection = true; // 图层态不落框选
             }
         }
-        if (doc->GetRegion(rx, ry, rw, rh)) {
+        if (!source && doc->GetRegion(rx, ry, rw, rh)) {
             const int bw = composite->GetWidth(), bh = composite->GetHeight();
             const int cx = (std::max)(0, rx), cy = (std::max)(0, ry);
             const int cw = (std::min)(bw - cx, rw), ch = (std::min)(bh - cy, rh);
@@ -2009,7 +2016,11 @@ void RunExtractFlow(HWND owner, Document* doc) {
                     util::Format(L"已框选区域：只提取选区内容 %d×%d", cw, ch));
             }
         }
-        if (!source) source = std::move(composite);
+        if (!source) {
+            source = std::move(composite);
+            App::Instance().ShowStatusMessage(
+                L"未框选：提取整张图内容（框选区域或选中图层可只提取该部分）");
+        }
         // 临时区域用完即清，不在画布上留下虚线框
         if (regionFromSelection) doc->ClearRegion();
     }
