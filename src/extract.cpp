@@ -1445,6 +1445,17 @@ void RunMagicEraseImpl(HWND owner, Document* doc, ProgressState& prog, ExtractRe
 
     int rx = 0, ry = 0, rw = 0, rh = 0;
     bool hasRegion = doc->GetRegion(rx, ry, rw, rh);
+    // 直接选中浮动图片图层：以该图层当前位置为消除区域
+    //（必须在定版烙入前取边界，烙入后图层不再以选中标注存在）
+    if (!hasRegion) {
+        Annotation* sel = doc->GetSelected();
+        if (sel && sel->type == AnnType::Image) {
+            RectF b;
+            sel->GetBounds(b);
+            doc->SetRegion(b.X, b.Y, b.X + b.Width, b.Y + b.Height);
+            hasRegion = doc->GetRegion(rx, ry, rw, rh);
+        }
+    }
 
     // collect brush annotations
     std::vector<int> brushIdx;
@@ -1675,6 +1686,10 @@ void RunMagicEraseImpl(HWND owner, Document* doc, ProgressState& prog, ExtractRe
     }
 
     doc->PushUndo();
+    // 与用户所见一致：先把画布上的浮动图片图层烙进底图（复用上面的撤销快照），
+    // 消除结果回写底层后才不会被浮在上面的图层盖住。
+    // 烙图 + 回写结果合并为同一步撤销：Ctrl+Z 一步退回操作前的图层态。
+    doc->FlattenImageLayers(false);
     // 直接烙进底图：消除结果覆盖写入 base 像素，不生成可选中/可拖动的标注图层。
     // 发送图可能做过归一化（缩放/补边），这里只取结果的内容区域并还原到选区原尺寸。
     {
@@ -1701,22 +1716,240 @@ void RunMagicEraseImpl(HWND owner, Document* doc, ProgressState& prog, ExtractRe
     resultBmp.reset();
 
     // remove consumed brush strokes
-    if (!brushIdx.empty()) {
-        for (int i = static_cast<int>(brushIdx.size()) - 1; i >= 0; --i) {
-            int idx = brushIdx[i];
-            if (idx >= 0 && idx < static_cast<int>(doc->annotations.size())) {
-                if (doc->annotations[idx] && doc->annotations[idx]->type == AnnType::Brush) {
-                    doc->annotations.erase(doc->annotations.begin() + idx);
-                }
-            }
-        }
-        doc->selectedIdx = -1;
+    //（按类型删除而不是按下标：上方 FlattenImageLayers 移除了图层标注，下标已位移）
+    if (hasBrush) {
+        doc->annotations.erase(
+            std::remove_if(doc->annotations.begin(), doc->annotations.end(),
+                           [](const std::unique_ptr<Annotation>& a) {
+                               return a && a->type == AnnType::Brush;
+                           }),
+            doc->annotations.end());
     }
     if (hasRegion) doc->ClearRegion();
     doc->selectedIdx = -1;
 
     Canvas::Instance().Refresh();
     App::Instance().ShowStatusMessage(L"魔法消除完成");
+}
+
+// ---------- 提取矢量图（火山 AI MediaKit 智能抠图） ----------
+
+// 扫描 alpha 通道：是否存在不透明像素（阈值 > 8），并给出主体包围盒
+bool AlphaBounds(Bitmap* bmp, Rect& out) {
+    if (!bmp) return false;
+    const UINT w = bmp->GetWidth(), h = bmp->GetHeight();
+    if (w == 0 || h == 0) return false;
+    BitmapData d;
+    Rect rc(0, 0, static_cast<INT>(w), static_cast<INT>(h));
+    if (bmp->LockBits(&rc, ImageLockModeRead, PixelFormat32bppARGB, &d) != Ok) return false;
+    int minx = INT_MAX, miny = INT_MAX, maxx = -1, maxy = -1;
+    for (UINT y = 0; y < h; ++y) {
+        const BYTE* row = static_cast<const BYTE*>(d.Scan0) + static_cast<size_t>(y) * d.Stride;
+        for (UINT x = 0; x < w; ++x) {
+            if (row[x * 4 + 3] > 8) {
+                if (static_cast<int>(x) < minx) minx = static_cast<int>(x);
+                if (static_cast<int>(x) > maxx) maxx = static_cast<int>(x);
+                if (static_cast<int>(y) < miny) miny = static_cast<int>(y);
+                if (static_cast<int>(y) > maxy) maxy = static_cast<int>(y);
+            }
+        }
+    }
+    bmp->UnlockBits(&d);
+    if (maxx < 0) return false;
+    out = Rect(minx, miny, maxx - minx + 1, maxy - miny + 1);
+    return true;
+}
+
+// 火山 AI MediaKit「图像背景移除（智能抠图）」同步接口。
+// 与魔法消除同一把 API Key（Bearer），图片走 mediakit 本地上传协议。
+// 文档：https://www.volcengine.com/docs/6448/2464627
+bool VolcRemoveBackground(const std::wstring& apiKey, const std::wstring& imageUrl,
+                          const wchar_t* scene, std::vector<BYTE>& outPng,
+                          std::wstring& err, netutil::CancelFlag& cancel) {
+    const std::wstring base = L"https://mediakit.cn-beijing.volces.com/api/v1";
+    std::string body = "{\"image_url\":\"" + netutil::JsonEscape(netutil::WideToUtf8(imageUrl)) +
+                       "\",\"scene\":\"" + netutil::WideToUtf8(scene) +
+                       "\",\"output_format\":\"png\"}";
+    netutil::HttpResponse resp;
+    if (!netutil::PostJson(base + L"/tools-sync/remove-image-background",
+                           util::TrimToken(apiKey), body, resp, &cancel)) {
+        err = cancel.IsCancelled() ? L"已取消" : (resp.error.empty() ? L"请求失败" : resp.error);
+        return false;
+    }
+    netutil::Json j = netutil::Parse(resp.body);
+    if (!resp.ok()) {
+        err = L"抠图接口失败：" + netutil::ExtractApiError(resp);
+        return false;
+    }
+    if (!VolcJsonSuccess(j, err, resp)) {
+        if (err.empty()) err = L"抠图接口失败";
+        return false;
+    }
+    const netutil::Json* result = j.Find("result");
+    if (!result) result = &j;
+    const netutil::Json* img = result->Find("image_url");
+    if (!img || img->AsWStr().empty()) {
+        err = L"响应缺少 result.image_url";
+        return false;
+    }
+    netutil::HttpResponse down;
+    if (!netutil::GetBinary(img->AsWStr(), down, &cancel) || down.binary.empty()) {
+        err = cancel.IsCancelled() ? L"已取消" : L"下载结果图失败";
+        return false;
+    }
+    outPng = std::move(down.binary);
+    return true;
+}
+
+void RunExtractVectorImpl(HWND owner, Document* doc, ProgressState& prog) {
+    if (!doc || !doc->base) {
+        MessageBoxW(owner, L"没有活动截图", L"提取矢量图", MB_ICONWARNING);
+        return;
+    }
+    const std::wstring key = util::TrimToken(Settings().volcApiKey);
+    if (key.empty()) {
+        MessageBoxW(owner, L"请先在「设置」中填写火山 API Key", L"提取矢量图", MB_ICONWARNING);
+        return;
+    }
+    auto set_prog = [&prog](const std::wstring& s) {
+        prog.status = s;
+        if (prog.hwnd && IsWindow(prog.hwnd))
+            SetWindowTextW(GetDlgItem(prog.hwnd, IDC_PROG_TEXT), s.c_str());
+    };
+
+    // 目标区域：框选优先；无框选时允许直接选中一个浮动图层（抠它自己）
+    int rx = 0, ry = 0, rw = 0, rh = 0;
+    bool hasRegion = doc->GetRegion(rx, ry, rw, rh);
+    if (!hasRegion) {
+        Annotation* sel = doc->GetSelected();
+        if (sel && sel->type == AnnType::Image) {
+            RectF b;
+            sel->GetBounds(b);
+            doc->SetRegion(b.X, b.Y, b.X + b.Width, b.Y + b.Height);
+            hasRegion = doc->GetRegion(rx, ry, rw, rh);
+        }
+    }
+    if (!hasRegion) {
+        MessageBoxW(owner, L"请先用「选择」框选要提取的区域（图标 / 人像等主体），或选中一个浮动图层",
+                    L"提取矢量图", MB_ICONINFORMATION);
+        return;
+    }
+
+    // 选区四周留一点上下文，帮模型看清主体边缘；结果只取主体区域，不受影响
+    const int pad = 16;
+    const int ox = (std::max)(0, rx - pad);
+    const int oy = (std::max)(0, ry - pad);
+    const int ex = (std::min)(doc->Width(), rx + rw + pad);
+    const int ey = (std::min)(doc->Height(), ry + rh + pad);
+    const int cw = ex - ox, ch = ey - oy;
+    if (cw < 10 || ch < 10) {
+        MessageBoxW(owner, L"选区太小（至少 10×10 像素）", L"提取矢量图", MB_ICONWARNING);
+        return;
+    }
+
+    set_prog(L"正在准备图像");
+    auto composite = doc->RenderComposite(); // 含浮动图层，所见即所抠
+    if (!composite) {
+        MessageBoxW(owner, L"图像合成失败", L"提取矢量图", MB_ICONWARNING);
+        return;
+    }
+    auto crop = util::CropBitmap(composite.get(), ox, oy, cw, ch);
+    if (!crop) {
+        MessageBoxW(owner, L"裁剪失败", L"提取矢量图", MB_ICONWARNING);
+        return;
+    }
+    std::string cropPng;
+    if (!ziputil::BitmapToPngBytes(crop.get(), cropPng)) {
+        MessageBoxW(owner, L"PNG 编码失败", L"提取矢量图", MB_ICONWARNING);
+        return;
+    }
+    std::vector<BYTE> cropBytes(cropPng.begin(), cropPng.end());
+
+    set_prog(L"正在上传图像");
+    std::wstring fileId, uploadUrl, upErr;
+    if (!VolcUpload(key, cropBytes, fileId, uploadUrl, upErr, prog.cancel)) {
+        if (prog.cancel.IsCancelled()) return;
+        MessageBoxW(owner, upErr.empty() ? L"上传图像失败，请检查火山 API Key" : upErr.c_str(),
+                    L"提取矢量图", MB_ICONERROR);
+        return;
+    }
+    const std::wstring imageUrl = EnsureMediakitUrl(fileId);
+
+    // 智能场景链：通用 → 人像 → 商品。通用场景覆盖绝大多数主体；
+    // 只有当返回结果整张透明（未识别到主体）时才降级换场景重试。
+    const wchar_t* scenes[] = {L"general", L"human", L"product"};
+    const wchar_t* sceneNames[] = {L"通用", L"人像", L"商品"};
+    std::unique_ptr<Bitmap> resultBmp;
+    Rect subject{};
+    std::wstring lastErr;
+    bool got = false;
+    for (int i = 0; i < 3 && !got; ++i) {
+        set_prog(std::wstring(L"正在抠图（") + sceneNames[i] + L"场景）");
+        std::vector<BYTE> resultBytes;
+        std::wstring err;
+        if (!VolcRemoveBackground(key, imageUrl, scenes[i], resultBytes, err, prog.cancel)) {
+            if (prog.cancel.IsCancelled()) return;
+            lastErr = err;
+            break; // 接口级失败不换场景重试
+        }
+        auto bmp = BitmapFromBytes(resultBytes);
+        if (!bmp) {
+            lastErr = L"结果图解析失败";
+            break;
+        }
+        Rect ab;
+        if (!AlphaBounds(bmp.get(), ab)) {
+            // 整张透明 = 该场景没认出主体 → 换下一个场景
+            if (i + 1 < 3) {
+                set_prog(std::wstring(sceneNames[i]) + L"场景未识别到主体，改用" +
+                         sceneNames[i + 1] + L"场景重试");
+            } else {
+                lastErr = L"未能识别出画面主体，请调整框选范围后重试";
+            }
+            continue;
+        }
+        resultBmp = std::move(bmp);
+        subject = ab;
+        got = true;
+    }
+    if (!got) {
+        MessageBoxW(owner,
+                    lastErr.empty() ? L"未能识别出画面主体，请调整框选范围后重试" : lastErr.c_str(),
+                    L"提取矢量图", MB_ICONERROR);
+        return;
+    }
+
+    // 位置映射：火山默认不裁剪输出（结果图与发送图几何对齐）；
+    // 保险起见，若尺寸不一致则按比例映射主体位置
+    const double scaleX = static_cast<double>(cw) / resultBmp->GetWidth();
+    const double scaleY = static_cast<double>(ch) / resultBmp->GetHeight();
+    const float px = static_cast<float>(ox + subject.X * scaleX);
+    const float py = static_cast<float>(oy + subject.Y * scaleY);
+    const float pw = static_cast<float>(subject.Width * scaleX);
+    const float ph = static_cast<float>(subject.Height * scaleY);
+
+    // 主体从结果图裁出（去掉四周透明边），作为透明底浮动图层落回画布
+    auto cut = util::CropBitmap(resultBmp.get(), subject.X, subject.Y, subject.Width, subject.Height);
+    if (!cut) {
+        MessageBoxW(owner, L"结果裁剪失败", L"提取矢量图", MB_ICONERROR);
+        return;
+    }
+    doc->PushUndo();
+    auto img = doc->CreatePasteFrom(std::move(cut), px, py);
+    if (!img) {
+        if (!doc->undoStack.empty()) doc->undoStack.pop_back();
+        MessageBoxW(owner, L"生成图层失败", L"提取矢量图", MB_ICONERROR);
+        return;
+    }
+    img->rect = RectF(px, py, pw, ph);
+    img->selected = true;
+    doc->ClearSelection();
+    doc->selectedIdx = static_cast<int>(doc->annotations.size());
+    doc->annotations.push_back(std::move(img));
+    doc->ClearRegion();
+    Canvas::Instance().Refresh();
+    App::Instance().ShowStatusMessage(
+        L"已提取矢量图：透明底图层放入画布，可拖动；Ctrl+C 复制后可粘贴到微信 / 文档（保留透明底）");
 }
 
 } // namespace
@@ -1738,10 +1971,22 @@ void RunExtractFlow(HWND owner, Document* doc) {
         return;
     }
 
-    // 有框选区域时只提取选区内容（精确控制）；无选区保持整图提取
+    // 有框选区域时只提取选区内容（精确控制）；无框选但选中了浮动图片图层时，
+    // 以该图层当前位置为提取范围——与人眼所见一致。无选区保持整图提取。
+    //（提取是只读操作，合成渲染本就包含浮动图层，无需把图层烙进底图）
     std::unique_ptr<Bitmap> source;
+    bool regionFromSelection = false;
     {
         int rx = 0, ry = 0, rw = 0, rh = 0;
+        if (!doc->GetRegion(rx, ry, rw, rh)) {
+            Annotation* sel = doc->GetSelected();
+            if (sel && sel->type == AnnType::Image) {
+                RectF b;
+                sel->GetBounds(b);
+                doc->SetRegion(b.X, b.Y, b.X + b.Width, b.Y + b.Height);
+                regionFromSelection = true;
+            }
+        }
         if (doc->GetRegion(rx, ry, rw, rh)) {
             const int bw = composite->GetWidth(), bh = composite->GetHeight();
             const int cx = (std::max)(0, rx), cy = (std::max)(0, ry);
@@ -1753,6 +1998,8 @@ void RunExtractFlow(HWND owner, Document* doc) {
             }
         }
         if (!source) source = std::move(composite);
+        // 临时区域用完即清，不在画布上留下虚线框
+        if (regionFromSelection) doc->ClearRegion();
     }
 
     ExtractResult result;
@@ -1811,10 +2058,14 @@ bool MagicErasePreflight(HWND owner, Document* doc) {
     }
     int rx = 0, ry = 0, rw = 0, rh = 0;
     if (doc->GetRegion(rx, ry, rw, rh)) return true;
+    // 直接选中浮动图片图层：以图层位置为消除目标
+    if (Annotation* sel = doc->GetSelected()) {
+        if (sel->type == AnnType::Image) return true;
+    }
     for (const auto& a : doc->annotations) {
         if (a && a->type == AnnType::Brush) return true;
     }
-    MessageBoxW(owner, L"请先用「选择」框选区域，或用「笔刷」涂抹要消除的内容",
+    MessageBoxW(owner, L"请先框选区域、选中浮动图层，或用「笔刷」涂抹要消除的内容",
                 L"魔法消除", MB_ICONINFORMATION);
     return false;
 }
@@ -1830,6 +2081,40 @@ void RunMagicErase(HWND owner, Document* doc) {
         RunMagicEraseImpl(owner, doc, prog, dummy);
     };
     ShowProgressAndRun(owner, L"魔法消除", prog);
+    Canvas::Instance().Refresh();
+    App::Instance().UpdateStatus();
+}
+
+void RunExtractVector(HWND owner, Document* doc) {
+    // 前置校验：无目标时只弹提示框，不显示进度窗
+    if (!doc || !doc->base) {
+        MessageBoxW(owner, L"没有活动截图", L"提取矢量图", MB_ICONWARNING);
+        return;
+    }
+    if (util::TrimToken(Settings().volcApiKey).empty()) {
+        MessageBoxW(owner, L"请先在「设置」中填写火山 API Key（与魔法消除共用）",
+                    L"提取矢量图", MB_ICONWARNING);
+        return;
+    }
+    bool hasTarget = false;
+    int rx = 0, ry = 0, rw = 0, rh = 0;
+    if (doc->GetRegion(rx, ry, rw, rh)) {
+        hasTarget = true;
+    } else if (Annotation* sel = doc->GetSelected()) {
+        if (sel->type == AnnType::Image) hasTarget = true;
+    }
+    if (!hasTarget) {
+        MessageBoxW(owner, L"请先用「选择」框选要提取的区域（图标 / 人像等主体），或选中一个浮动图层",
+                    L"提取矢量图", MB_ICONINFORMATION);
+        return;
+    }
+    ProgressState prog;
+    prog.status = L"正在提取";
+    prog.cancelText = L"取消提取";
+    prog.work = [&]() {
+        RunExtractVectorImpl(owner, doc, prog);
+    };
+    ShowProgressAndRun(owner, L"提取矢量图", prog);
     Canvas::Instance().Refresh();
     App::Instance().UpdateStatus();
 }

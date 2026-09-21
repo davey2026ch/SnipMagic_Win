@@ -307,6 +307,47 @@ inline std::unique_ptr<Gdiplus::Bitmap> AddInnerBorder(Gdiplus::Bitmap* src,
     return out;
 }
 
+// PNG 编码到内存（供剪贴板 PNG 格式等使用）
+inline bool BitmapToPngMem(Gdiplus::Bitmap* bmp, std::vector<BYTE>& out) {
+    out.clear();
+    if (!bmp) return false;
+    UINT num = 0, size = 0;
+    Gdiplus::GetImageEncodersSize(&num, &size);
+    if (!size) return false;
+    std::vector<BYTE> buf(size);
+    auto* info = reinterpret_cast<Gdiplus::ImageCodecInfo*>(buf.data());
+    Gdiplus::GetImageEncoders(num, size, info);
+    CLSID clsid{};
+    bool found = false;
+    for (UINT i = 0; i < num; ++i) {
+        if (wcscmp(info[i].MimeType, L"image/png") == 0) {
+            clsid = info[i].Clsid;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return false;
+    IStream* stream = nullptr;
+    if (CreateStreamOnHGlobal(nullptr, TRUE, &stream) != S_OK) return false;
+    bool ok = false;
+    LARGE_INTEGER zero = {};
+    if (bmp->Save(stream, &clsid, nullptr) == Gdiplus::Ok) {
+        STATSTG stg{};
+        if (stream->Seek(zero, STREAM_SEEK_SET, nullptr) == S_OK &&
+            stream->Stat(&stg, STATFLAG_NONAME) == S_OK && stg.cbSize.QuadPart > 0) {
+            out.resize(static_cast<size_t>(stg.cbSize.QuadPart));
+            ULONG read = 0;
+            if (stream->Read(out.data(), static_cast<ULONG>(out.size()), &read) == S_OK &&
+                read == out.size()) {
+                ok = true;
+            }
+        }
+    }
+    stream->Release();
+    if (!ok) out.clear();
+    return ok;
+}
+
 // Put GDI+ bitmap onto Windows clipboard as CF_DIB
 inline bool BitmapToClipboard(Gdiplus::Bitmap* bmp) {
     if (!bmp) return false;
@@ -369,6 +410,26 @@ inline bool BitmapToClipboard(Gdiplus::Bitmap* bmp) {
     bmp->UnlockBits(&data);
     GlobalUnlock(hMem);
     SetClipboardData(CF_DIB, hMem);
+
+    // 额外放一份 PNG（注册格式 "PNG"）：CF_DIB 不带透明度（透明处已填白），
+    // 支持透明底的应用（微信 / Word / 支持贴透明图的新版应用）会优先读 PNG 格式，
+    // 拿到的就是带 Alpha 通道的原图。失败不影响 CF_DIB。
+    if (UINT pngFmt = RegisterClipboardFormatW(L"PNG")) {
+        std::vector<BYTE> png;
+        if (BitmapToPngMem(bmp, png) && !png.empty()) {
+            if (HGLOBAL hPng = GlobalAlloc(GMEM_MOVEABLE, png.size())) {
+                if (void* p = GlobalLock(hPng)) {
+                    memcpy(p, png.data(), png.size());
+                    GlobalUnlock(hPng);
+                    if (SetClipboardData(pngFmt, hPng) == nullptr) {
+                        GlobalFree(hPng); // 系统未接管，自己释放
+                    }
+                } else {
+                    GlobalFree(hPng);
+                }
+            }
+        }
+    }
     CloseClipboard();
     return true;
 }

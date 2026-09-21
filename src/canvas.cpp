@@ -50,6 +50,20 @@ bool IsShapeDrawTool(Tool t) {
     default: return false;
     }
 }
+
+// 进行中的草稿是否达到了「落定成标注」的有效性标准
+//（与松手时判定一致：太短/太小的误操作直接丢弃，不进画面）
+bool DraftWorthAdding(const std::unique_ptr<Annotation>& d) {
+    if (!d) return false;
+    if (auto* f = dynamic_cast<FreehandAnn*>(d.get())) return !f->points.empty();
+    if (auto* l = dynamic_cast<LineAnn*>(d.get())) {
+        float dx = l->x2 - l->x1, dy = l->y2 - l->y1;
+        return (dx * dx + dy * dy) > 4.0f;
+    }
+    if (auto* sh = dynamic_cast<ShapeAnn*>(d.get()))
+        return sh->rect.Width > 2 || sh->rect.Height > 2;
+    return true;
+}
 } // namespace
 
 Canvas& Canvas::Instance() {
@@ -58,6 +72,9 @@ Canvas& Canvas::Instance() {
 }
 
 void Canvas::SetTool(Tool t) {
+    // 查看模式：先把进行中的编辑「定版」（成型、烙入画面），再进入纯浏览
+    bool committed = false;
+    if (t == Tool::View) committed = FinalizeForView();
     tool_ = t;
     dragMode_ = DragMode::None;
     draft_.reset();
@@ -66,9 +83,49 @@ void Canvas::SetTool(Tool t) {
         doc_->ClearSelection();
         doc_->ClearRegion();
         activeHandle_ = HandleId::None;
-        App::Instance().ShowStatusMessage(L"查看模式：仅浏览，不可编辑");
+        if (!committed) {
+            App::Instance().ShowStatusMessage(L"查看模式：仅浏览，不可编辑");
+        }
     }
     Refresh();
+}
+
+// 查看模式「定版」：点查看模式那一刻，画布上的编辑状态自动成型——
+//  1) 正在拖画的图形就地落定为标注（有效性标准与松手一致）；
+//  2) 正在拖动/缩放的对象就地落位（撤销快照在交互开始时已压栈）；
+//  3) 浮动图片图层（移花接木抠图 / 粘贴图片）烙进底图，不再以可拖动图层存在。
+// 全程走正常撤销栈：烙图前 PushUndo，Ctrl+Z 一步退回「图层还没烙」的可编辑状态。
+// 返回 true 表示有编辑被定版（已给出状态栏提示）。
+bool Canvas::FinalizeForView() {
+    if (!doc_ || !doc_->base) return false;
+    bool didCommit = false;
+
+    // 1) 正在画的草稿：有效则落定，无效则丢弃
+    if (dragMode_ == DragMode::Draw && DraftWorthAdding(draft_)) {
+        PushAndAdd(std::move(draft_));
+        didCommit = true;
+    }
+    draft_.reset();
+
+    // 2) 进行中的拖动 / 缩放：就地落定
+    dragMode_ = DragMode::None;
+    moveBackup_.reset();
+    activeHandle_ = HandleId::None;
+
+    // 3) 浮动图片图层烙进底图（Document::FlattenImageLayers：烙前 PushUndo，可整体回退）
+    const int bakedLayers = doc_->FlattenImageLayers(true);
+    if (bakedLayers > 0) didCommit = true;
+
+    doc_->ClearSelection();
+    doc_->ClearRegion();
+
+    if (bakedLayers > 0) {
+        App::Instance().ShowStatusMessage(
+            L"查看模式：已定版，浮动图层烙入画面；Ctrl+Z 可撤销");
+    } else if (didCommit) {
+        App::Instance().ShowStatusMessage(L"查看模式：编辑已定版；Ctrl+Z 可撤销");
+    }
+    return didCommit;
 }
 
 bool Canvas::Create(HWND parent, HINSTANCE hi) {
@@ -863,16 +920,7 @@ void Canvas::OnMouseUp(int x, int y) {
     ClientToImage(x, y, ix, iy);
 
     if (dragMode_ == DragMode::Draw && draft_) {
-        bool add = true;
-        if (auto* f = dynamic_cast<FreehandAnn*>(draft_.get())) {
-            add = f->points.size() >= 1;
-        } else if (auto* l = dynamic_cast<LineAnn*>(draft_.get())) {
-            float dx = l->x2 - l->x1, dy = l->y2 - l->y1;
-            add = (dx * dx + dy * dy) > 4.0f;
-        } else if (auto* sh = dynamic_cast<ShapeAnn*>(draft_.get())) {
-            add = sh->rect.Width > 2 || sh->rect.Height > 2;
-        }
-        if (add) {
+        if (DraftWorthAdding(draft_)) {
             bool locked = toolLocked_ && IsShapeDrawTool(tool_);
             PushAndAdd(std::move(draft_));
             if (locked) {

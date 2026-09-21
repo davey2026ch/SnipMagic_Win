@@ -127,6 +127,18 @@ void DrawCommandIcon(Graphics& g, int id, REAL x, REAL y, REAL s, Color c) {
         g.DrawLine(&p, x + s * 0.22f, y + s * 0.74f, x + s * 0.50f, y + s * 0.74f);
         break;
     }
+    case ID_CMD_EXTRACT_VECTOR: { // 提取矢量图：虚线取景框 + 人像剪影（智能抠图）
+        Pen dashPen(Color(255, 60, 60, 60), 1.2f);
+        dashPen.SetDashStyle(DashStyleDash);
+        GraphicsPath frame;
+        RoundRectPath(frame, x + s * 0.04f, y + s * 0.04f, s * 0.92f, s * 0.92f, s * 0.14f);
+        g.DrawPath(&dashPen, &frame);
+        g.FillEllipse(&b, x + s * 0.38f, y + s * 0.18f, s * 0.24f, s * 0.24f);
+        GraphicsPath body;
+        body.AddArc(x + s * 0.24f, y + s * 0.50f, s * 0.52f, s * 0.52f, 180.0f, 180.0f);
+        g.FillPath(&b, &body);
+        break;
+    }
     case ID_CMD_MAGIC_ERASE: { // 魔法消除：魔棒 + 十字星光
         g.DrawLine(&p, x + s * 0.12f, y + s * 0.88f, x + s * 0.56f, y + s * 0.44f);
         g.DrawLine(&p, x + s * 0.46f, y + s * 0.34f, x + s * 0.64f, y + s * 0.52f);
@@ -746,6 +758,7 @@ void App::BuildToolbars() {
     addTop(ID_CMD_LONG_CAPTURE, L"长截图");
     addTop(ID_CMD_MOSAIC, L"马赛克");
     addTop(ID_CMD_EXTRACT, L"提取内容");
+    addTop(ID_CMD_EXTRACT_VECTOR, L"提取矢量图");
     addTop(ID_CMD_MAGIC_ERASE, L"魔法消除");
     addTop(ID_CMD_SETTINGS, L"设置");
     addTop(ID_CMD_SAVE_ALL, L"全部保存");
@@ -757,7 +770,7 @@ void App::BuildToolbars() {
     const L left[] = {
         { ID_TOOL_SELECT,   L"选择（框选区域）", Tool::Select, true, false },
         { ID_TOOL_BRUSH,    L"笔刷（半透明高亮）", Tool::Brush, true, false },
-        { ID_TOOL_VIEW,     L"查看模式",         Tool::View, true, false },
+        { ID_TOOL_VIEW,     L"查看模式（自动定版：进行中的编辑成型，浮动图层烙入画面，Ctrl+Z 可撤销）", Tool::View, true, false },
         { ID_TOOL_TEXT,     L"插入文字",         Tool::Text, true, false },
         { ID_TOOL_ARROW,    L"箭头",            Tool::Arrow, true, false },
         { ID_TOOL_LINE,     L"直线",            Tool::Line, true, false },
@@ -1469,6 +1482,7 @@ void App::OnCommand(int id) {
     case ID_CMD_LONG_CAPTURE: StartLongCapture(); break;
     case ID_CMD_MOSAIC: Canvas::Instance().ApplyMosaicToSelection(); break;
     case ID_CMD_EXTRACT: extract::RunExtractFlow(hwnd_, ActiveDoc()); break;
+    case ID_CMD_EXTRACT_VECTOR: extract::RunExtractVector(hwnd_, ActiveDoc()); break;
     case ID_CMD_MAGIC_ERASE: extract::RunMagicErase(hwnd_, ActiveDoc()); break;
     case ID_CMD_SETTINGS: OpenSettings(); break;
     case ID_CMD_SAVE_ALL: SaveAllDocs(); break;

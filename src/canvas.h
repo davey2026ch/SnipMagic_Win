@@ -118,6 +118,9 @@ private:
     HandleId activeHandle_ = HandleId::None;
 
     void OpenTextEditor(int hitIndex);
+    // 查看模式「定版」：进行中的编辑自动成型，浮动图片图层烙进底图（走撤销栈，可回退）。
+    // 返回 true 表示有编辑被定版
+    bool FinalizeForView();
     // 框选区内空白处按下：抠起选区画面（原位置烙白），内容变为可拖动图片图层
     bool BeginRegionContentMove(int rx, int ry, int rw, int rh, float ix, float iy);
 

@@ -165,16 +165,59 @@ std::unique_ptr<ImageAnn> Document::CreatePasteFrom(std::unique_ptr<Bitmap> bmp,
     return img;
 }
 
+int Document::FlattenImageLayers(bool pushUndo) {
+    if (!base) return 0;
+    int count = 0;
+    for (const auto& a : annotations) {
+        if (a && a->type == AnnType::Image) ++count;
+    }
+    if (count == 0) return 0;
+    if (pushUndo) PushUndo();
+    {
+        // 与导出合成(RenderComposite)相同的绘制设置，保证烙进去的效果和看到的一致
+        Graphics g(base.get());
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+        for (const auto& a : annotations) {
+            if (a && a->type == AnnType::Image) a->Draw(g);
+        }
+    }
+    annotations.erase(
+        std::remove_if(annotations.begin(), annotations.end(),
+                       [](const std::unique_ptr<Annotation>& a) {
+                           return a && a->type == AnnType::Image;
+                       }),
+        annotations.end());
+    selectedIdx = -1;
+    return count;
+}
+
 bool Document::CopySelectionToClipboard(Bitmap** outInternal) {
     if (outInternal) *outInternal = nullptr;
     if (!base) return false;
 
     int x = 0, y = 0, w = 0, h = 0;
     if (!GetRegion(x, y, w, h)) {
+        // 选中浮动图片图层：直接复制图层自身位图——透明底原样保留
+        //（不走合成渲染，否则透明区会被底图像素填充；外部剪贴板也不加内边框）
         Annotation* sel = GetSelected();
-        if (sel) {
+        if (sel && sel->type == AnnType::Image) {
+            auto* ia = static_cast<ImageAnn*>(sel);
+            if (ia->image) {
+                auto forClipboard = std::unique_ptr<Bitmap>(
+                    ia->image->Clone(0, 0, ia->image->GetWidth(), ia->image->GetHeight(),
+                                     PixelFormat32bppARGB));
+                if (!forClipboard) return false;
+                util::BitmapToClipboard(forClipboard.get()); // CF_DIB + PNG（透明）
+                GlobalPasteBuffer().Set(std::move(forClipboard));
+                return true;
+            }
+            return false;
+        }
+        Annotation* selAny = GetSelected();
+        if (selAny) {
             RectF b;
-            sel->GetBounds(b);
+            selAny->GetBounds(b);
             x = static_cast<int>(std::floor(b.X));
             y = static_cast<int>(std::floor(b.Y));
             w = static_cast<int>(std::ceil(b.Width));

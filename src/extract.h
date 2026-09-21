@@ -28,6 +28,10 @@ struct ExtractResult {
 // Returns after result dialog closes. Temp files are deleted before return.
 void RunExtractFlow(HWND owner, Document* doc);
 
+// 提取矢量图：框选区域（或选中的浮动图层）走火山 AI MediaKit 智能抠图，
+// 结果为透明底 PNG，直接作为浮动图层落回画布（可拖动 / 可复制到外部应用）。
+void RunExtractVector(HWND owner, Document* doc);
+
 // Magic erase on region or brush strokes of active document.
 void RunMagicErase(HWND owner, Document* doc);
 
