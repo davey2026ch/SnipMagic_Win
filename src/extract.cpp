@@ -1923,10 +1923,22 @@ void RunExtractVectorImpl(HWND owner, Document* doc, ProgressState& prog) {
     // 保险起见，若尺寸不一致则按比例映射主体位置
     const double scaleX = static_cast<double>(cw) / resultBmp->GetWidth();
     const double scaleY = static_cast<double>(ch) / resultBmp->GetHeight();
-    const float px = static_cast<float>(ox + subject.X * scaleX);
-    const float py = static_cast<float>(oy + subject.Y * scaleY);
+    float px = static_cast<float>(ox + subject.X * scaleX);
+    float py = static_cast<float>(oy + subject.Y * scaleY);
     const float pw = static_cast<float>(subject.Width * scaleX);
     const float ph = static_cast<float>(subject.Height * scaleY);
+
+    // 与原始位置错开几个像素（优先往左上），一眼能看出是提取出来的新图层；
+    // 左上放不下（贴画布边）则改往右下，仍放不下才原地放置
+    const float kPeekOffset = 8.0f;
+    if (px - kPeekOffset >= 0 && py - kPeekOffset >= 0) {
+        px -= kPeekOffset;
+        py -= kPeekOffset;
+    } else if (px + pw + kPeekOffset <= doc->Width() &&
+               py + ph + kPeekOffset <= doc->Height()) {
+        px += kPeekOffset;
+        py += kPeekOffset;
+    }
 
     // 主体从结果图裁出（去掉四周透明边），作为透明底浮动图层落回画布
     auto cut = util::CropBitmap(resultBmp.get(), subject.X, subject.Y, subject.Width, subject.Height);
@@ -1949,7 +1961,7 @@ void RunExtractVectorImpl(HWND owner, Document* doc, ProgressState& prog) {
     doc->ClearRegion();
     Canvas::Instance().Refresh();
     App::Instance().ShowStatusMessage(
-        L"已提取矢量图：透明底图层放入画布，可拖动；Ctrl+C 复制后可粘贴到微信 / 文档（保留透明底）");
+        L"已提取矢量图：新图层已与原位置错开放置，可拖动；Ctrl+C 复制后可粘贴到微信 / 文档（保留透明底）");
 }
 
 } // namespace
