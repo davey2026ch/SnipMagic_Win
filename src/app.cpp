@@ -1413,7 +1413,8 @@ void App::OnPaint() {
     g.DrawLine(&borderPen, 0, tabTop, w, tabTop);
 
     // tabs — width is 50% of the previous 72px
-    int tx = leftW_ + 8;
+    // 页签从窗口左侧边框贴紧开始（不再对齐画布左边，避免左侧留一大片空白）
+    int tx = util::Scale(6, dpi_);
     int ty = tabTop + 4;
     int th = tabH_ - 8;
     int tabW = util::Scale(36, dpi_);
@@ -2001,7 +2002,7 @@ int App::HitTab(int x, int y) const {
     int h = rc.bottom;
     int tabTop = h - statusH_ - tabH_;
     if (y < tabTop || y >= tabTop + tabH_) return -1;
-    int tx = leftW_ + 8;
+    int tx = util::Scale(6, dpi_); // 与绘制处保持一致：贴紧左侧边框
     int tw = util::Scale(36, dpi_); // 50% of previous 72px
     for (size_t i = 0; i < docs_.size(); ++i) {
         RECT trc = { tx, tabTop + 4, tx + tw, tabTop + 4 + tabH_ - 8 };
