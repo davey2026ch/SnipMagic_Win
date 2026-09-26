@@ -191,6 +191,8 @@ void AppSettings::Load() {
     int a = IniInt(L"Settings", L"DrawAlpha", 255);
     drawAlpha = static_cast<BYTE>((std::max)(0, (std::min)(255, a)));
 
+    borderCopyToExternal = IniInt(L"Settings", L"BorderCopyToExternal", 1) != 0;
+
     mineruToken = util::TrimToken(IniValue(L"Settings", L"MinerUToken", L""));
     volcApiKey  = util::TrimToken(IniValue(L"Settings", L"VolcApiKey", L""));
 }
@@ -209,6 +211,7 @@ void AppSettings::Save() const {
     IniWrite(L"Settings", L"ThemeColor", util::ToHex(themeColor));
     IniWrite(L"Settings", L"DrawColor", util::ToHex(drawColor));
     IniWriteInt(L"Settings", L"DrawAlpha", drawAlpha);
+    IniWriteInt(L"Settings", L"BorderCopyToExternal", borderCopyToExternal ? 1 : 0);
     IniWrite(L"Settings", L"MinerUToken", util::TrimToken(mineruToken));
     IniWrite(L"Settings", L"VolcApiKey", util::TrimToken(volcApiKey));
 

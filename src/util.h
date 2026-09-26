@@ -348,6 +348,168 @@ inline bool BitmapToPngMem(Gdiplus::Bitmap* bmp, std::vector<BYTE>& out) {
     return ok;
 }
 
+// ---------- CF_HTML（"HTML Format"）支持 ----------
+// Foxmail 等网页式编辑器的写邮件窗口插图片只认 "HTML Format"（CF_HTML），
+// 不认裸位图（CF_DIB）。该格式内容是一段 HTML，含一个 <img>。
+// 图片源的选型（实测结论，2026-09-26）：
+//  - Word 对剪贴板 HTML 里的图片只认 base64 内嵌（data URI），file:/// 路径
+//    会被静默跳过（表现为空白页）；且 Word 优先消费 HTML 格式而非 CF_DIB；
+//  - Foxmail 等编辑器对 file:/// 引用支持良好，但老 IE 内核对超过 32KB 的
+//    data URI 不支持。
+//  所以：src 用 data URI（Word/现代内核都吃），并挂 onerror 兜底回退到
+//  file:/// 临时文件（老 IE 内核 data URI 超限时走这条）。
+// 临时 PNG 文件仍会落盘（供兜底引用），超过 24 小时自动清理。
+
+inline std::string WideToUtf8(const std::wstring& s) {
+    if (s.empty()) return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                                nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string out(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                        &out[0], n, nullptr, nullptr);
+    return out;
+}
+
+inline std::string Base64Encode(const unsigned char* data, size_t len) {
+    static const char* tbl =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((len + 2) / 3 * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        unsigned v = static_cast<unsigned>(data[i]) << 16;
+        if (i + 1 < len) v |= static_cast<unsigned>(data[i + 1]) << 8;
+        if (i + 2 < len) v |= static_cast<unsigned>(data[i + 2]);
+        out += tbl[(v >> 18) & 63];
+        out += tbl[(v >> 12) & 63];
+        out += (i + 1 < len) ? tbl[(v >> 6) & 63] : '=';
+        out += (i + 2 < len) ? tbl[v & 63] : '=';
+    }
+    return out;
+}
+
+inline std::string Base64Encode(const std::vector<BYTE>& data) {
+    return Base64Encode(data.data(), data.size());
+}
+
+// 清理临时目录里超过 24 小时的旧 PNG（每次复制调用一次，防止无限堆积；
+// 24 小时内的保留——粘贴动作可能发生在复制之后的任意时刻）
+inline void CleanupClipboardTempFiles(const std::wstring& dir) {
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = FindFirstFileW((dir + L"\\*.png").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    FILETIME nowFt;
+    GetSystemTimeAsFileTime(&nowFt);
+    ULONGLONG now = (static_cast<ULONGLONG>(nowFt.dwHighDateTime) << 32) | nowFt.dwLowDateTime;
+    const ULONGLONG kDay = 24ull * 3600 * 10000000ull; // 24h，单位 100ns
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        ULONGLONG t = (static_cast<ULONGLONG>(fd.ftLastWriteTime.dwHighDateTime) << 32) |
+                      fd.ftLastWriteTime.dwLowDateTime;
+        if (now > t + kDay) {
+            DeleteFileW((dir + L"\\" + fd.cFileName).c_str());
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+// 把 PNG 落盘到临时目录并生成 CF_HTML 放上剪贴板。任何一步失败都静默返回
+// （CF_DIB / PNG 格式已在前面设置，不影响其他软件）。
+// CF_HTML 规范：头部 4 个 10 位十进制偏移按 UTF-8 字节计算；四个字段名长度
+// 各不相同（StartFragment: 是 14 字符），所以头长不固定——先格式化一次测出
+// 实际头长，再回填真实偏移（偏移恒为 10 位数字，回填不改变头长）。
+inline void SetClipboardHtmlFormat(UINT fmt, const std::vector<BYTE>& png, UINT w, UINT h) {
+    if (png.empty()) return;
+    wchar_t temp[MAX_PATH] = {};
+    if (!GetTempPathW(MAX_PATH, temp)) return;
+    std::wstring dir = std::wstring(temp) + L"SnipMagicClip";
+    CreateDirectoryW(dir.c_str(), nullptr);
+
+    static unsigned s_seq = 0;
+    std::wstring file = dir + util::Format(L"\\clip_%u_%u.png", GetTickCount(), ++s_seq);
+    HANDLE hf = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hf == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    WriteFile(hf, png.data(), static_cast<DWORD>(png.size()), &written, nullptr);
+    CloseHandle(hf);
+    if (written != png.size()) {
+        DeleteFileW(file.c_str());
+        return;
+    }
+
+    // 文件路径 → file:/// URI（UTF-8 + 百分号编码，反斜杠转正斜杠）
+    std::wstring fwd = file;
+    for (auto& c : fwd) if (c == L'\\') c = L'/';
+    std::string utf8 = WideToUtf8(fwd);
+    std::string uri = "file:///";
+    static const char* hex = "0123456789ABCDEF";
+    for (unsigned char c : utf8) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+            c == '-' || c == '.' || c == '_' || c == '~' || c == '/') {
+            uri += static_cast<char>(c);
+        } else {
+            uri += '%';
+            uri += hex[c >> 4];
+            uri += hex[c & 0x0F];
+        }
+    }
+
+    std::string frag = "<img src=\"data:image/png;base64," + Base64Encode(png) +
+                       "\" width=\"" + std::to_string(w) + "\" height=\"" + std::to_string(h) +
+                       "\" onerror=\"this.onerror=null;this.src='" + uri + "'\">";
+    std::string pre = "<html><body>\r\n<!--StartFragment-->\r\n";
+    std::string post = "\r\n<!--EndFragment-->\r\n</body></html>";
+    std::string html = pre + frag + post;
+
+    const char* kHeaderFmt =
+        "Version:0.9\r\nStartHTML:%010zu\r\nEndHTML:%010zu\r\n"
+        "StartFragment:%010zu\r\nEndFragment:%010zu\r\n";
+    char header[128] = {};
+    _snprintf_s(header, _TRUNCATE, kHeaderFmt, 0, 0, 0, 0);
+    size_t headerLen = strlen(header); // 占位与真实值位数相同，头长不变
+    _snprintf_s(header, _TRUNCATE, kHeaderFmt,
+                headerLen, headerLen + html.size(),
+                headerLen + pre.size(), headerLen + pre.size() + frag.size());
+    if (strlen(header) != headerLen) return; // 头部长度异常则放弃，避免产出坏格式
+
+    std::string full = std::string(header) + html;
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, full.size() + 1);
+    if (!hMem) return;
+    if (void* p = GlobalLock(hMem)) {
+        memcpy(p, full.c_str(), full.size() + 1);
+        GlobalUnlock(hMem);
+        if (SetClipboardData(fmt, hMem) == nullptr) {
+            GlobalFree(hMem); // 系统未接管，自己释放
+        }
+    } else {
+        GlobalFree(hMem);
+    }
+
+    CleanupClipboardTempFiles(dir);
+}
+
+// 是否存在非 255 的 alpha 像素（用于决定带透明底的内容复制时是否跳过边框，
+// 避免在透明图边缘画出悬空的边框线破坏透明度）
+inline bool BitmapHasAlpha(Gdiplus::Bitmap* bmp) {
+    if (!bmp) return false;
+    UINT w = bmp->GetWidth();
+    UINT h = bmp->GetHeight();
+    Gdiplus::BitmapData data;
+    Gdiplus::Rect rc(0, 0, static_cast<INT>(w), static_cast<INT>(h));
+    if (bmp->LockBits(&rc, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &data) != Gdiplus::Ok)
+        return false;
+    bool has = false;
+    for (UINT y = 0; y < h && !has; ++y) {
+        const unsigned char* row = static_cast<const unsigned char*>(data.Scan0) + y * data.Stride;
+        for (UINT x = 0; x < w; ++x) {
+            if (row[x * 4 + 3] != 255) { has = true; break; }
+        }
+    }
+    bmp->UnlockBits(&data);
+    return has;
+}
+
 // Put GDI+ bitmap onto Windows clipboard as CF_DIB
 inline bool BitmapToClipboard(Gdiplus::Bitmap* bmp) {
     if (!bmp) return false;
@@ -411,12 +573,15 @@ inline bool BitmapToClipboard(Gdiplus::Bitmap* bmp) {
     GlobalUnlock(hMem);
     SetClipboardData(CF_DIB, hMem);
 
+    // PNG 内存编码一次，两处共用："PNG" 剪贴板格式（带透明）+ CF_HTML 引用的临时文件
+    std::vector<BYTE> png;
+    BitmapToPngMem(bmp, png);
+
     // 额外放一份 PNG（注册格式 "PNG"）：CF_DIB 不带透明度（透明处已填白），
     // 支持透明底的应用（微信 / Word / 支持贴透明图的新版应用）会优先读 PNG 格式，
     // 拿到的就是带 Alpha 通道的原图。失败不影响 CF_DIB。
     if (UINT pngFmt = RegisterClipboardFormatW(L"PNG")) {
-        std::vector<BYTE> png;
-        if (BitmapToPngMem(bmp, png) && !png.empty()) {
+        if (!png.empty()) {
             if (HGLOBAL hPng = GlobalAlloc(GMEM_MOVEABLE, png.size())) {
                 if (void* p = GlobalLock(hPng)) {
                     memcpy(p, png.data(), png.size());
@@ -429,6 +594,12 @@ inline bool BitmapToClipboard(Gdiplus::Bitmap* bmp) {
                 }
             }
         }
+    }
+
+    // 额外放一份 "HTML Format"（CF_HTML）：Foxmail 等网页式编辑器插图片只认该格式，
+    // 通过引用临时 PNG 文件让编辑器把图嵌进正文。失败不影响 CF_DIB / PNG。
+    if (UINT htmlFmt = RegisterClipboardFormatW(L"HTML Format")) {
+        SetClipboardHtmlFormat(htmlFmt, png, w, h);
     }
     CloseClipboard();
     return true;

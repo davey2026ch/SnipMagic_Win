@@ -33,6 +33,10 @@ struct AppSettings {
     COLORREF drawColor  = RGB(0xFF, 0x00, 0x00);
     BYTE     drawAlpha  = 255;
 
+    // 带边框复制到外部软件：开启时复制到微信/Word 等外部程序自动加 1px 内边框；
+    // 程序内粘贴（当前画布/其他页签）始终不加边框。默认开启。
+    bool borderCopyToExternal = true;
+
     // API tokens (persisted; never hardcode secrets in source)
     std::wstring mineruToken;  // MinerU API — 提取内容
     std::wstring volcApiKey;   // 火山引擎 AI MediaKit — 魔法消除

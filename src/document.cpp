@@ -204,12 +204,25 @@ bool Document::CopySelectionToClipboard(Bitmap** outInternal) {
         if (sel && sel->type == AnnType::Image) {
             auto* ia = static_cast<ImageAnn*>(sel);
             if (ia->image) {
-                auto forClipboard = std::unique_ptr<Bitmap>(
+                // 应用内粘贴缓冲：图层自身位图——透明底原样保留，绝不加边框
+                auto internal = std::unique_ptr<Bitmap>(
                     ia->image->Clone(0, 0, ia->image->GetWidth(), ia->image->GetHeight(),
                                      PixelFormat32bppARGB));
-                if (!forClipboard) return false;
-                util::BitmapToClipboard(forClipboard.get()); // CF_DIB + PNG（透明）
-                GlobalPasteBuffer().Set(std::move(forClipboard));
+                if (!internal) return false;
+                // 外部剪贴板：按「带边框复制到外部软件」设置决定是否加内边框；
+                // 含透明像素的图保持原样，避免在透明底边缘画出悬空的边框线
+                auto external = std::unique_ptr<Bitmap>(
+                    internal->Clone(0, 0, internal->GetWidth(), internal->GetHeight(),
+                                    PixelFormat32bppARGB));
+                if (external && Settings().borderCopyToExternal &&
+                    !util::BitmapHasAlpha(internal.get())) {
+                    if (auto bordered = util::AddInnerBorder(internal.get(),
+                                                             Gdiplus::Color(255, 160, 160, 160))) {
+                        external = std::move(bordered);
+                    }
+                }
+                util::BitmapToClipboard(external.get()); // CF_DIB + PNG + HTML Format
+                GlobalPasteBuffer().Set(std::move(internal));
                 return true;
             }
             return false;
@@ -234,10 +247,17 @@ bool Document::CopySelectionToClipboard(Bitmap** outInternal) {
     auto crop = util::CropBitmap(composite.get(), x, y, w, h);
     if (!crop) return false;
 
-    // 外部剪贴板：默认加 1px 内边框，避免浅色背景上截图边缘看不出来；
-    // 应用内粘贴缓冲保持原图（不带边框）。
-    auto bordered = util::AddInnerBorder(crop.get(), Gdiplus::Color(255, 160, 160, 160));
-    util::BitmapToClipboard(bordered ? bordered.get() : crop.get());
+    // 外部剪贴板：按「带边框复制到外部软件」设置决定是否加 1px 内边框
+    //（避免浅色背景上截图边缘看不出来）；应用内粘贴缓冲始终原图（不带边框）。
+    std::unique_ptr<Bitmap> external;
+    if (Settings().borderCopyToExternal) {
+        external = util::AddInnerBorder(crop.get(), Gdiplus::Color(255, 160, 160, 160));
+    }
+    if (!external) {
+        external.reset(crop->Clone(0, 0, crop->GetWidth(), crop->GetHeight(),
+                                   PixelFormat32bppARGB));
+    }
+    util::BitmapToClipboard(external.get()); // CF_DIB + PNG + HTML Format
     GlobalPasteBuffer().Set(std::unique_ptr<Bitmap>(
         crop->Clone(0, 0, crop->GetWidth(), crop->GetHeight(), PixelFormat32bppARGB)));
     return true;

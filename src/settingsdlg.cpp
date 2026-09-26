@@ -11,7 +11,7 @@
 namespace {
 
 const int kW = 760;
-const int kH = 520;
+const int kH = 562;
 
 // 更新检测的后台结果槽（单实例单对话框）
 updater::UpdateInfo s_updInfo;
@@ -57,7 +57,8 @@ enum {
     IDC_VOLC_KEY = 3012,
     IDC_VOLC_EYE = 3013,
     IDC_LONG_HOTKEY = 3014,
-    IDC_CHECK_UPDATE = 3015
+    IDC_CHECK_UPDATE = 3015,
+    IDC_BORDER_COPY = 3016
 };
 
 struct SetDlgState {
@@ -140,6 +141,32 @@ void TogglePassword(HWND edit, bool show) {
     InvalidateRect(edit, nullptr, TRUE);
 }
 
+// 自绘滑动开关（设置页「带边框复制到外部软件」用）
+void DrawSwitch(DRAWITEMSTRUCT* dis, bool on) {
+    if (!dis) return;
+    Graphics g(dis->hDC);
+    RECT rc = dis->rcItem;
+    REAL w = static_cast<REAL>(rc.right - rc.left);
+    REAL h = static_cast<REAL>(rc.bottom - rc.top);
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+
+    bool dark = darkui::Dark();
+    COLORREF track = on ? RGB(0, 120, 215)
+                        : (dark ? RGB(95, 95, 95) : RGB(185, 185, 185));
+    SolidBrush trackBrush(ToGpColor(track));
+    GraphicsPath path;
+    REAL r = h * 0.5f;
+    path.AddArc(0.5f, 0.5f, h - 1.0f, h - 1.0f, 90, 180);
+    path.AddArc(w - h - 0.5f, 0.5f, h - 1.0f, h - 1.0f, 270, 180);
+    path.CloseFigure();
+    g.FillPath(&trackBrush, &path);
+
+    REAL d = h - 7.0f; // 圆形滑块直径
+    REAL kx = on ? (w - d - 3.5f) : 3.5f;
+    SolidBrush knobBrush(ToGpColor(RGB(255, 255, 255)));
+    g.FillEllipse(&knobBrush, kx, 3.5f, d, d);
+}
+
 // 主题下拉框箭头区域补画：系统主题画不出深色的下拉箭头按钮
 LRESULT CALLBACK ThemeComboProc(HWND h, UINT m, WPARAM w, LPARAM l,
                                 UINT_PTR, DWORD_PTR) {
@@ -198,6 +225,11 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (id == IDC_VOLC_EYE) {
             st->showVolc = !st->showVolc;
             TogglePassword(GetDlgItem(hwnd, IDC_VOLC_KEY), st->showVolc);
+            return 0;
+        }
+        if (id == IDC_BORDER_COPY) {
+            st->draft.borderCopyToExternal = !st->draft.borderCopyToExternal;
+            InvalidateRect(GetDlgItem(hwnd, IDC_BORDER_COPY), nullptr, FALSE);
             return 0;
         }
         if (id == IDC_CHECK_UPDATE) {
@@ -343,6 +375,10 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         if (dis->CtlID == IDC_VOLC_EYE) {
             DrawEyeButton(dis, st && st->showVolc);
+            return TRUE;
+        }
+        if (dis->CtlID == IDC_BORDER_COPY) {
+            DrawSwitch(dis, st && st->draft.borderCopyToExternal);
             return TRUE;
         }
         return 0;
@@ -512,6 +548,20 @@ bool SettingsDialog::Show(HWND owner) {
     edit(IDC_BRUSH, std::to_wstring(st.draft.brushThickness).c_str(), 140, y - 3, 100);
     y += 42;
 
+    // 带边框复制到外部软件（自绘滑动开关 + 右侧说明）
+    label(L"带边框复制", 20, y);
+    HWND borderSw = CreateWindowW(L"BUTTON", L"",
+                                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                  140, y - 3, 46, 24, hwnd,
+                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_BORDER_COPY)), hi, nullptr);
+    (void)borderSw;
+    HWND borderHint = CreateWindowW(L"STATIC",
+                                    L"开启后，粘贴到外部软件（微信、office、邮件等）时自动添加外边框",
+                                    WS_CHILD | WS_VISIBLE,
+                                    198, y + 2, 530, 22, hwnd, nullptr, hi, nullptr);
+    SendMessageW(borderHint, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    y += 42;
+
     // 密码字号略小，保证长 token 单行可完整显示
     HFONT fontPw = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Consolas");
@@ -629,6 +679,7 @@ bool SettingsDialog::Show(HWND owner) {
     s.mosaicSize = st.draft.mosaicSize;
     s.lineThickness = st.draft.lineThickness;
     s.brushThickness = st.draft.brushThickness;
+    s.borderCopyToExternal = st.draft.borderCopyToExternal;
     s.mineruToken = util::TrimToken(st.draft.mineruToken);
     s.volcApiKey = util::TrimToken(st.draft.volcApiKey);
     // themeColor 保持原值（设置界面已不再提供）
