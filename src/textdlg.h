@@ -15,6 +15,8 @@ struct TextDialogResult {
 class TextAnn;
 
 namespace TextDialog {
-TextDialogResult Show(HWND owner, COLORREF initialColor,
-                      TextAnn* existing = nullptr);
+// existing 非空：编辑已有文字，用该文字自身的颜色初始化；
+// existing 为空：插入新文字，使用弹窗固定的默认色，
+// 与左侧工具栏的颜色设置互不联动。
+TextDialogResult Show(HWND owner, TextAnn* existing = nullptr);
 }

@@ -92,6 +92,8 @@ enum {
     IDC_OK = 1004,
     IDC_CANCEL = 1005,
     IDC_WHITE = 1006,
+    IDC_BLACK = 1007,
+    IDC_RED = 1008,
     IDC_SLIDER_BASE = 1100,
     IDC_EDIT_BASE = 1200,
 };
@@ -476,7 +478,8 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         int id = LOWORD(wParam);
         int code = HIWORD(wParam);
         // 按钮只响应 BN_CLICKED，避免重复触发
-        if (id == IDC_OK || id == IDC_CANCEL || id == IDC_EYEDROP || id == IDC_WHITE) {
+        if (id == IDC_OK || id == IDC_CANCEL || id == IDC_EYEDROP ||
+            id == IDC_WHITE || id == IDC_RED || id == IDC_BLACK) {
             if (code != BN_CLICKED && code != 0) return 0;
         }
         if (id == IDC_OK) {
@@ -499,6 +502,20 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         if (id == IDC_WHITE) {
             st->r = 255; st->g = 255; st->b = 255;
+            st->SyncFromRGB();
+            st->alpha = 255;
+            RefreshAll(st);
+            return 0;
+        }
+        if (id == IDC_RED) {
+            st->r = 255; st->g = 0; st->b = 0;
+            st->SyncFromRGB();
+            st->alpha = 255;
+            RefreshAll(st);
+            return 0;
+        }
+        if (id == IDC_BLACK) {
+            st->r = 0; st->g = 0; st->b = 0;
             st->SyncFromRGB();
             st->alpha = 255;
             RefreshAll(st);
@@ -644,7 +661,7 @@ bool ColorPicker::Eyedropper(HWND owner, COLORREF& outColor) {
     return st.ok;
 }
 
-ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, bool showQuickWhite) {
+ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, int quickButtons) {
     // 防止重复弹出（按钮双击/消息重入导致叠两层窗口）
     static bool s_inShow = false;
     if (s_inShow) return ColorResult{};
@@ -707,12 +724,30 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, b
     int btnY = kDlgH - 48;
     int btnW = 90, btnH = 32;
     int okX = kDlgW - 230;
-    HWND whiteBtn = nullptr;
-    if (showQuickWhite) {
+    // 快捷色按钮统一 66 宽，从「确定」左侧向左依次排列：
+    // [红色][黑色][白色] [确定][取消]
+    const int kQuickW = 66, kQuickGap = 8;
+    int qx = okX - kQuickGap - kQuickW;
+    HWND whiteBtn = nullptr, redBtn = nullptr, blackBtn = nullptr;
+    if (quickButtons & kQuickWhite) {
         whiteBtn = CreateWindowW(L"BUTTON", L"白色",
                                  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                 okX - 100, btnY, btnW, btnH, hwnd,
+                                 qx, btnY, kQuickW, btnH, hwnd,
                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_WHITE)), hi, nullptr);
+        qx -= kQuickW + kQuickGap;
+    }
+    if (quickButtons & kQuickBlack) {
+        blackBtn = CreateWindowW(L"BUTTON", L"黑色",
+                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                 qx, btnY, kQuickW, btnH, hwnd,
+                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_BLACK)), hi, nullptr);
+        qx -= kQuickW + kQuickGap;
+    }
+    if (quickButtons & kQuickRed) {
+        redBtn = CreateWindowW(L"BUTTON", L"红色",
+                               WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                               qx, btnY, kQuickW, btnH, hwnd,
+                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RED)), hi, nullptr);
     }
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
@@ -739,6 +774,8 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, b
         SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         if (whiteBtn) SendMessageW(whiteBtn, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        if (redBtn) SendMessageW(redBtn, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        if (blackBtn) SendMessageW(blackBtn, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         for (int i = 0; i < 5; ++i)
             SendMessageW(GetDlgItem(hwnd, IDC_EDIT_BASE + i), WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }

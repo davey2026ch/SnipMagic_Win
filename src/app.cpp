@@ -1822,7 +1822,7 @@ void App::SelectTool(Tool t) {
 void App::OpenColorPicker() {
     COLORREF c = Canvas::Instance().GetDrawColor();
     BYTE a = Settings().drawAlpha;
-    auto r = ColorPicker::Show(hwnd_, c, a);
+    auto r = ColorPicker::Show(hwnd_, c, a, ColorPicker::kQuickWhite);
     if (r.ok) {
         Canvas::Instance().SetDrawColor(r.color);
         Canvas::Instance().SetAlpha(r.alpha);

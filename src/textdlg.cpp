@@ -1,7 +1,6 @@
 #include "textdlg.h"
 #include "annotation.h"
 #include "colorpicker.h"
-#include "settings.h"
 #include "darkui.h"
 
 using namespace Gdiplus;
@@ -28,9 +27,6 @@ struct TextDlgState {
     COLORREF color = RGB(255, 0, 0);
     BYTE alpha = 255;
     COLORREF bgColor = RGB(255, 255, 255);
-    // 文字颜色的默认值：背景颜色取色器打开时与其保持一致
-    COLORREF textColorDefault = RGB(255, 0, 0);
-    BYTE textColorDefaultAlpha = 255;
     HWND colorBtn = nullptr;
     HWND bgColorBtn = nullptr;
     HWND bgColorLabel = nullptr;
@@ -107,7 +103,10 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             if (s_inColor) return 0;
             s_inColor = true;
             if (id == TXC_COLOR) {
-                auto r = ColorPicker::Show(hwnd, st->color, st->alpha, true);
+                auto r = ColorPicker::Show(hwnd, st->color, st->alpha,
+                                           ColorPicker::kQuickWhite |
+                                           ColorPicker::kQuickRed |
+                                           ColorPicker::kQuickBlack);
                 s_inColor = false;
                 if (r.ok) {
                     st->color = r.color;
@@ -115,12 +114,11 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                     RefreshSwatches(st);
                 }
             } else {
-                // 背景颜色取色器打开时的明度/RGB/透明度/HEX
-                // 与文字颜色设置按钮一致（使用文字颜色默认值）
-                auto r = ColorPicker::Show(hwnd,
-                                           st->textColorDefault,
-                                           st->textColorDefaultAlpha,
-                                           true);
+                // 背景颜色取色器按当前背景色初始化（背景不涉及透明度）
+                auto r = ColorPicker::Show(hwnd, st->bgColor, 255,
+                                           ColorPicker::kQuickWhite |
+                                           ColorPicker::kQuickRed |
+                                           ColorPicker::kQuickBlack);
                 s_inColor = false;
                 if (r.ok) {
                     st->bgColor = r.color;
@@ -190,18 +188,23 @@ void EnsureClass(HINSTANCE hi) {
 
 } // namespace
 
-TextDialogResult TextDialog::Show(HWND owner, COLORREF initialColor, TextAnn* existing) {
+TextDialogResult TextDialog::Show(HWND owner, TextAnn* existing) {
     HINSTANCE hi = GetModuleHandleW(nullptr);
     EnsureClass(hi);
 
     TextDlgState st;
-    // 文字颜色默认值（插入时为 initialColor + 当前画笔透明度）
-    st.textColorDefault = initialColor;
-    st.textColorDefaultAlpha = Settings().drawAlpha;
-    st.color = existing ? existing->style.color : initialColor;
-    st.alpha = existing ? existing->style.alpha : Settings().drawAlpha;
-    // 背景色默认值与文字颜色默认值保持一致
-    st.bgColor = existing ? existing->bgColor : initialColor;
+    if (existing) {
+        // 编辑已有文字：使用该文字自身的颜色
+        st.color = existing->style.color;
+        st.alpha = existing->style.alpha;
+        st.bgColor = existing->bgColor;
+    } else {
+        // 插入新文字：使用弹窗固定的默认色（红字 / 白底 / 不透明），
+        // 与左侧工具栏的颜色设置互不联动
+        st.color = RGB(255, 0, 0);
+        st.alpha = 255;
+        st.bgColor = RGB(255, 255, 255);
+    }
 
     // 弹窗显示在主窗口所在的显示器（多屏时不再固定弹到主屏）
     const wchar_t* caption = existing ? L"编辑文字" : L"插入文字";

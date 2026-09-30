@@ -27,3 +27,5 @@ cmake_install.cmake
 .workbuddy/
 截图工具需求说明书1.0.docx
 work/
+__pycache__/
+测试文件/color_ui_verify/

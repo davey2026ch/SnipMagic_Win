@@ -715,8 +715,8 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
             return;
         }
 
-        // 文字工具 + 空白处：插入新文字
-        TextDialogResult tr = TextDialog::Show(hwnd_, Settings().drawColor);
+        // 文字工具 + 空白处：插入新文字（弹窗颜色与工具栏颜色互不联动）
+        TextDialogResult tr = TextDialog::Show(hwnd_);
         if (tr.ok && !tr.text.empty()) {
             doc_->PushUndo();
             auto t = std::make_unique<TextAnn>();
@@ -983,7 +983,7 @@ void Canvas::OpenTextEditor(int hitIndex) {
     if (doc_->annotations[hitIndex]->type != AnnType::Text) return;
     auto* t = static_cast<TextAnn*>(doc_->annotations[hitIndex].get());
     RectF keep = t->rect;
-    TextDialogResult tr = TextDialog::Show(hwnd_, t->style.color, t);
+    TextDialogResult tr = TextDialog::Show(hwnd_, t);
     if (tr.ok && !tr.text.empty()) {
         doc_->PushUndo();
         t->text = tr.text;
