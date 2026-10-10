@@ -93,8 +93,9 @@ void Canvas::SetTool(Tool t) {
 // 查看模式「定版」：点查看模式那一刻，画布上的编辑状态自动成型——
 //  1) 正在拖画的图形就地落定为标注（有效性标准与松手一致）；
 //  2) 正在拖动/缩放的对象就地落位（撤销快照在交互开始时已压栈）；
-//  3) 浮动图片图层（移花接木抠图 / 粘贴图片）烙进底图，不再以可拖动图层存在。
-// 全程走正常撤销栈：烙图前 PushUndo，Ctrl+Z 一步退回「图层还没烙」的可编辑状态。
+//  3) 所有浮动层（图形/文字/序号/移花接木抠图/粘贴图片）全部烙进底图，
+//     标注列表清空：之后切到任何工具都无法再编辑之前的浮动层。
+// 全程走正常撤销栈：烙图前 PushUndo，Ctrl+Z 一步退回「还没烙」的可编辑状态。
 // 返回 true 表示有编辑被定版（已给出状态栏提示）。
 bool Canvas::FinalizeForView() {
     if (!doc_ || !doc_->base) return false;
@@ -112,8 +113,10 @@ bool Canvas::FinalizeForView() {
     moveBackup_.reset();
     activeHandle_ = HandleId::None;
 
-    // 3) 浮动图片图层烙进底图（Document::FlattenImageLayers：烙前 PushUndo，可整体回退）
-    const int bakedLayers = doc_->FlattenImageLayers(true);
+    // 3) 所有浮动层（图形/文字/序号/图片图层）全部烙进底图（Document::FlattenAll：
+    //    烙前 PushUndo，Ctrl+Z 一步退回全部标注可编辑的状态）。
+    //    烙死后标注列表被清空，之后切到任何工具都无旧层可选、可编。
+    const int bakedLayers = doc_->FlattenAll(true);
     if (bakedLayers > 0) didCommit = true;
 
     doc_->ClearSelection();
@@ -121,7 +124,7 @@ bool Canvas::FinalizeForView() {
 
     if (bakedLayers > 0) {
         App::Instance().ShowStatusMessage(
-            L"查看模式：已定版，浮动图层烙入画面；Ctrl+Z 可撤销");
+            L"查看模式：已定版，所有浮动层烙入画面；Ctrl+Z 可撤销");
     } else if (didCommit) {
         App::Instance().ShowStatusMessage(L"查看模式：编辑已定版；Ctrl+Z 可撤销");
     }

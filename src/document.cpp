@@ -192,6 +192,22 @@ int Document::FlattenImageLayers(bool pushUndo) {
     return count;
 }
 
+int Document::FlattenAll(bool pushUndo) {
+    if (!base || annotations.empty()) return 0;
+    if (pushUndo) PushUndo();
+    {
+        // 与导出合成(RenderComposite)相同的绘制设置，保证烙进去的效果和看到的一致
+        Graphics g(base.get());
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+        DrawAnnotations(g, true);
+    }
+    int count = static_cast<int>(annotations.size());
+    annotations.clear();
+    selectedIdx = -1;
+    return count;
+}
+
 bool Document::CopySelectionToClipboard(Bitmap** outInternal) {
     if (outInternal) *outInternal = nullptr;
     if (!base) return false;

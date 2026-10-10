@@ -330,6 +330,36 @@ void EnsureTipClass(HINSTANCE hi) {
     RegisterClassExW(&wc);
     reg = true;
 }
+
+// 主窗口关闭/保存流程开始前，把仍开着且带置顶属性的属主弹窗
+// （取色器 / 文字弹窗 / 设置弹窗等 WS_EX_TOPMOST）临时降为普通层级。
+// 否则后续的「是否保存」确认框、文件夹选择框、格式选择框都会被压在这些
+// 置顶弹窗下面，看起来像"没弹出来"。取消退出后弹窗保持普通层级（可接受）。
+struct DemoteCtx {
+    HWND main = nullptr;
+    DWORD tid = 0;
+};
+
+static BOOL CALLBACK DemoteEnumProc(HWND w, LPARAM lp) {
+    auto* c = reinterpret_cast<DemoteCtx*>(lp);
+    if (w == c->main) return TRUE;
+    if (GetWindow(w, GW_OWNER) != c->main) return TRUE;
+    if (!IsWindowVisible(w)) return TRUE;
+    LONG_PTR ex = GetWindowLongPtrW(w, GWL_EXSTYLE);
+    if (ex & WS_EX_TOPMOST) {
+        SetWindowPos(w, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    return TRUE;
+}
+
+static void DemoteTopmostOwnedPopups(HWND mainHwnd) {
+    if (!mainHwnd) return;
+    DemoteCtx ctx;
+    ctx.main = mainHwnd;
+    ctx.tid = GetWindowThreadProcessId(mainHwnd, nullptr);
+    EnumThreadWindows(ctx.tid, DemoteEnumProc, reinterpret_cast<LPARAM>(&ctx));
+}
 } // namespace
 
 App& App::Instance() {
@@ -657,7 +687,9 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_ERASEBKGND:
         return 1;
     case WM_CLOSE:
-        // 关闭主窗口：有截图页签时先问是否保存，避免直接丢掉
+        // 关闭主窗口：有截图页签时先问是否保存，避免直接丢掉。
+        // 先把开着置顶弹窗降级，确保确认框/文件夹框不被压在下面
+        DemoteTopmostOwnedPopups(hwnd);
         if (!docs_.empty()) {
             for (;;) {
                 int r = MessageBoxW(hwnd,
@@ -665,7 +697,7 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                     L"是 = 选择路径保存全部后退出\n"
                                     L"否 = 不保存直接退出\n"
                                     L"取消 = 不退出，留在当前界面",
-                                    APP_NAME, MB_YESNOCANCEL | MB_ICONQUESTION);
+                                    APP_NAME, MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST);
                 if (r == IDCANCEL) {
                     // 明确取消：不退出
                     return 0;
@@ -690,7 +722,7 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         if (MessageBoxW(hwnd,
                         L"确定退出截图工具吗？\n（最小化可继续在后台待命）",
-                        APP_NAME, MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                        APP_NAME, MB_YESNO | MB_ICONQUESTION | MB_TOPMOST) == IDYES) {
             DestroyWindow(hwnd);
         }
         return 0;
@@ -770,7 +802,7 @@ void App::BuildToolbars() {
     const L left[] = {
         { ID_TOOL_SELECT,   L"选择（框选区域）", Tool::Select, true, false },
         { ID_TOOL_BRUSH,    L"笔刷（半透明高亮）", Tool::Brush, true, false },
-        { ID_TOOL_VIEW,     L"查看模式（自动定版：进行中的编辑成型，浮动图层烙入画面，Ctrl+Z 可撤销）", Tool::View, true, false },
+        { ID_TOOL_VIEW,     L"查看模式（自动定版：所有浮动层烙入画面，之后不可再编辑；Ctrl+Z 可撤销）", Tool::View, true, false },
         { ID_TOOL_TEXT,     L"插入文字",         Tool::Text, true, false },
         { ID_TOOL_ARROW,    L"箭头",            Tool::Arrow, true, false },
         { ID_TOOL_LINE,     L"直线",            Tool::Line, true, false },
@@ -1714,12 +1746,13 @@ void App::ActivateDoc(int idx) {
 void App::CloseDoc(int idx) {
     if (idx < 0 || idx >= static_cast<int>(docs_.size())) return;
 
-    // 关闭单个截图页签前提示是否保存
+    // 关闭单个截图页签前提示是否保存（可能仍有置顶弹窗开着，先降级再确认）
+    DemoteTopmostOwnedPopups(hwnd_);
     const std::wstring name = docs_[idx]->name;
     int choice = MessageBoxW(hwnd_,
                              (L"关闭「" + name + L"」前是否保存图片？\n\n"
                               L"是 = 保存并关闭\n否 = 不保存直接关闭\n取消 = 不关闭").c_str(),
-                             APP_NAME, MB_YESNOCANCEL | MB_ICONQUESTION);
+                             APP_NAME, MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST);
     if (choice == IDCANCEL) return;
     if (choice == IDYES) {
         if (!SaveDoc(idx)) {
@@ -1789,7 +1822,7 @@ bool App::SaveAllDocs() {
     }
 
     int choice = MessageBoxW(hwnd_, L"是否使用 JPG 格式？\n（否 = PNG）", APP_NAME,
-                             MB_YESNOCANCEL | MB_ICONQUESTION);
+                             MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST);
     if (choice == IDCANCEL) {
         // 用户取消格式选择：同样视为未完成保存
         return false;

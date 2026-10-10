@@ -80,6 +80,11 @@ public:
     // 为 false 时复用调用方已压好的快照（如魔法消除的「烙图+回写结果」合并为一步撤销）。
     // 无图层时什么都不做、不压栈。
     int FlattenImageLayers(bool pushUndo = true);
+
+    // 查看模式「定版」：把当前所有标注（图形/文字/序号/图片图层）一次性烙进底图，
+    // 并清空标注列表，返回烙入的标注数量。烙完后任何工具都无法再编辑旧标注。
+    // pushUndo 为 true 时先压撤销栈（Ctrl+Z 可整体回退到标注态）；无标注时不压栈。
+    int FlattenAll(bool pushUndo = true);
 };
 
 // Global paste buffer for 移花接木 across sheets

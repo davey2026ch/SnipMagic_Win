@@ -42,13 +42,17 @@ inline void DarkTitleBar(HWND hwnd) {
     }
 }
 
-// 子控件配色：static 用面板底色，edit/listbox 用输入框底色
+// 子控件配色：static 用面板底色，edit/listbox 用输入框底色。
+// 输入框必须用不透明背景（SetBkMode(OPAQUE) + SetBkColor 与底色一致）：
+// 若用 TRANSPARENT，编辑框局部重绘时不擦除旧字迹，插入文字/退格后会出现重影。
 inline LRESULT CtlColor(UINT msg, HDC hdc) {
-    SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, TextCol());
     if (msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORLISTBOX) {
+        SetBkMode(hdc, OPAQUE);
+        SetBkColor(hdc, EditBg());
         return reinterpret_cast<LRESULT>(EditBrush());
     }
+    SetBkMode(hdc, TRANSPARENT);
     return reinterpret_cast<LRESULT>(BgBrush());
 }
 
