@@ -7,8 +7,12 @@ using namespace Gdiplus;
 
 namespace {
 
-const int kW = 560;
-const int kH = 340;
+// 初始客户区 = 原尺寸(560x340)的 1.5 倍，便于输入长文本；窗口可拖动边框缩放
+const int kW = 840;
+const int kH = 510;
+// 窗口最小客户区（拖动缩放的下限）：宽度要放得下底部那一整行控件
+const int kMinW = 700;
+const int kMinH = 400;
 
 enum TextCtrlId {
     TXC_EDIT = 2001,
@@ -27,9 +31,18 @@ struct TextDlgState {
     COLORREF color = RGB(255, 0, 0);
     BYTE alpha = 255;
     COLORREF bgColor = RGB(255, 255, 255);
+    HWND contentLabel = nullptr;
+    HWND edit = nullptr;
+    HWND fontLabel = nullptr;
+    HWND fontEdit = nullptr;
+    HWND bold = nullptr;
+    HWND trans = nullptr;
+    HWND colorLabel = nullptr;
     HWND colorBtn = nullptr;
     HWND bgColorBtn = nullptr;
     HWND bgColorLabel = nullptr;
+    HWND ok = nullptr;
+    HWND cancel = nullptr;
     bool done = false;
 };
 
@@ -65,6 +78,43 @@ void RefreshSwatches(TextDlgState* st) {
     (void)st;
 }
 
+// 按当前客户区尺寸重排所有子控件（窗口可拖动缩放）
+void LayoutTextDlg(TextDlgState* st) {
+    if (!st || !st->hwnd) return;
+    RECT rc;
+    GetClientRect(st->hwnd, &rc);
+    const int W = rc.right, H = rc.bottom;
+    const int m = 20;
+    const int btnW = 100, btnH = 34;
+    const int btnY = H - m - btnH;
+    // 底部只有一行：字号 / 加粗 / 背景透明 / 文字颜色 / 背景颜色
+    const int rowY = btnY - 44;
+    const int editTop = 40;
+    int editH = rowY - 12 - editTop;
+    if (editH < 60) editH = 60;
+
+    auto move = [](HWND h, int x, int y, int w, int hh) {
+        if (h) SetWindowPos(h, nullptr, x, y, w, hh, SWP_NOZORDER | SWP_NOACTIVATE);
+    };
+
+    move(st->contentLabel, m, 12, 120, 22);
+    move(st->edit, m, editTop, W - 2 * m, editH);
+
+    // 一行排开：字号 [输入] 加粗 背景透明 文字颜色[设置] 背景颜色[设置]
+    int x = m;
+    move(st->fontLabel, x, rowY + 2, 44, 22);      x += 44 + 2;
+    move(st->fontEdit, x, rowY, 66, 28);           x += 66 + 6;
+    move(st->bold, x, rowY, 126, 28);              x += 126 + 6;
+    move(st->trans, x, rowY, 118, 28);             x += 118 + 8;
+    move(st->colorLabel, x, rowY + 2, 74, 22);     x += 74 + 2;
+    move(st->colorBtn, x, rowY - 1, 62, 30);       x += 62 + 8;
+    move(st->bgColorLabel, x, rowY + 2, 74, 22);   x += 74 + 2;
+    move(st->bgColorBtn, x, rowY - 1, 62, 30);
+
+    move(st->cancel, W - m - btnW, btnY, btnW, btnH);
+    move(st->ok, W - m - 2 * btnW - 12, btnY, btnW, btnH);
+}
+
 void UpdateBgColorVisibility(TextDlgState* st) {
     if (!st || !st->hwnd) return;
     BOOL transparent = SendMessageW(GetDlgItem(st->hwnd, TXC_TRANS), BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -89,6 +139,20 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     case WM_CTLCOLOREDIT:
     case WM_CTLCOLORLISTBOX:
         return darkui::CtlColor(msg, reinterpret_cast<HDC>(wParam));
+    case WM_SIZE:
+        LayoutTextDlg(st);
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    case WM_GETMINMAXINFO: {
+        // 拖动缩放的下限：避免把弹窗缩到控件重叠、无法使用
+        auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+        RECT r = { 0, 0, kMinW, kMinH };
+        DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE));
+        DWORD ex = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+        AdjustWindowRectEx(&r, style, FALSE, ex);
+        mmi->ptMinTrackSize.x = r.right - r.left;
+        mmi->ptMinTrackSize.y = r.bottom - r.top;
+        return 0;
+    }
     case WM_COMMAND: {
         if (!st) return 0;
         int id = LOWORD(wParam);
@@ -209,12 +273,32 @@ TextDialogResult TextDialog::Show(HWND owner, TextAnn* existing) {
     // 弹窗显示在主窗口所在的显示器（多屏时不再固定弹到主屏）
     const wchar_t* caption = existing ? L"编辑文字" : L"插入文字";
 
+    // WS_THICKFRAME + WS_MAXIMIZEBOX：整块边框可拖动，用户能自行调整大小
     RECT wr = { 0, 0, kW, kH };
-    DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MAXIMIZEBOX;
     DWORD exStyle = WS_EX_TOPMOST;
     AdjustWindowRectEx(&wr, style, FALSE, exStyle);
     int outerW = wr.right - wr.left;
     int outerH = wr.bottom - wr.top;
+
+    // 初始尺寸不小于最小可用尺寸；屏幕装不下时按工作区收边（布局会自动重排）
+    RECT minClient = { 0, 0, kMinW, kMinH };
+    AdjustWindowRectEx(&minClient, style, FALSE, exStyle);
+    int minOuterW = minClient.right - minClient.left;
+    int minOuterH = minClient.bottom - minClient.top;
+    if (outerW < minOuterW) outerW = minOuterW;
+    if (outerH < minOuterH) outerH = minOuterH;
+
+    RECT wa = {};
+    HMONITOR mon = owner ? MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST) : nullptr;
+    MONITORINFO mi = { sizeof(mi) };
+    if (mon && GetMonitorInfoW(mon, &mi)) wa = mi.rcWork;
+    else SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    if (outerW > (wa.right - wa.left) - 24) outerW = (wa.right - wa.left) - 24;
+    if (outerH > (wa.bottom - wa.top) - 24) outerH = (wa.bottom - wa.top) - 24;
+    if (outerW < minOuterW) outerW = minOuterW;
+    if (outerH < minOuterH) outerH = minOuterH;
+
     POINT pos = util::CenterOnMonitorOf(owner, outerW, outerH);
 
     HWND hwnd = CreateWindowExW(exStyle, kTextClass, caption, style,
@@ -245,59 +329,58 @@ TextDialogResult TextDialog::Show(HWND owner, TextAnn* existing) {
         return hwndCtl;
     };
 
-    mkLabel(L"文字内容", 20, 12, 100, 22);
+    // 所有控件先按零尺寸创建，随后统一由 LayoutTextDlg 按客户区尺寸摆位
+    st.contentLabel = mkLabel(L"文字内容", 0, 0, 100, 22);
     // 内容过多时显示纵向滚动条（WS_VSCROLL + ES_AUTOVSCROLL）
-    HWND text = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
-                                existing ? existing->text.c_str() : L"",
-                                WS_CHILD | WS_VISIBLE | WS_VSCROLL |
-                                    ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
-                                20, 36, kW - 56, 150, hwnd, Hm(TXC_EDIT), hi, nullptr);
+    st.edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+                              existing ? existing->text.c_str() : L"",
+                              WS_CHILD | WS_VISIBLE | WS_VSCROLL |
+                                  ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
+                              0, 0, 100, 100, hwnd, Hm(TXC_EDIT), hi, nullptr);
 
-    mkLabel(L"字号", 20, 200, 48, 22);
+    st.fontLabel = mkLabel(L"字号", 0, 0, 48, 22);
     wchar_t szbuf[16];
     swprintf_s(szbuf, L"%d", existing ? static_cast<int>(existing->fontSize) : 20);
-    CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", szbuf,
-                    WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
-                    70, 196, 70, 28, hwnd, Hm(TXC_FONTSIZE), hi, nullptr);
+    st.fontEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", szbuf,
+                                  WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
+                                  0, 0, 70, 28, hwnd, Hm(TXC_FONTSIZE), hi, nullptr);
 
-    HWND bold = CreateWindowW(L"BUTTON", L"加粗 (Ctrl+B)",
-                              WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                              160, 196, 130, 28, hwnd, Hm(TXC_BOLD), hi, nullptr);
-    if (existing && existing->bold) SendMessageW(bold, BM_SETCHECK, BST_CHECKED, 0);
+    st.bold = CreateWindowW(L"BUTTON", L"加粗 (Ctrl+B)",
+                            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                            0, 0, 130, 28, hwnd, Hm(TXC_BOLD), hi, nullptr);
+    if (existing && existing->bold) SendMessageW(st.bold, BM_SETCHECK, BST_CHECKED, 0);
 
-    HWND trans = CreateWindowW(L"BUTTON", L"背景透明",
-                               WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                              310, 196, 110, 28, hwnd, Hm(TXC_TRANS), hi, nullptr);
+    st.trans = CreateWindowW(L"BUTTON", L"背景透明",
+                             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                             0, 0, 130, 28, hwnd, Hm(TXC_TRANS), hi, nullptr);
     bool transDefault = existing ? existing->transparentBg : true;
-    SendMessageW(trans, BM_SETCHECK, transDefault ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(st.trans, BM_SETCHECK, transDefault ? BST_CHECKED : BST_UNCHECKED, 0);
 
     // 文字颜色 / 背景颜色：同一套「设置」按钮 + ColorPicker，逻辑一致
     // （不用色块，避免白色时用户找不到入口）；按钮与标签文字垂直居中
-    mkLabel(L"文字颜色", 20, 242, 80, 22);
+    st.colorLabel = mkLabel(L"文字颜色", 0, 0, 80, 22);
     st.colorBtn = CreateWindowW(L"BUTTON", L"设置",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                100, 240, 72, 30, hwnd, Hm(TXC_COLOR), hi, nullptr);
+                                0, 0, 72, 30, hwnd, Hm(TXC_COLOR), hi, nullptr);
 
-    st.bgColorLabel = mkLabel(L"背景颜色", 190, 242, 80, 22);
+    st.bgColorLabel = mkLabel(L"背景颜色", 0, 0, 80, 22);
     SetWindowLongPtrW(st.bgColorLabel, GWLP_ID, 0);
     st.bgColorBtn = CreateWindowW(L"BUTTON", L"设置",
                                   WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                  270, 240, 72, 30, hwnd, Hm(TXC_BGCOLOR), hi, nullptr);
+                                  0, 0, 72, 30, hwnd, Hm(TXC_BGCOLOR), hi, nullptr);
 
-    // 紧凑：按钮贴颜色行，底边少留白
-    HWND ok = CreateWindowW(L"BUTTON", L"确定",
-                            WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                            kW - 240, 288, 100, 34, hwnd, Hm(TXC_OK), hi, nullptr);
-    HWND cancel = CreateWindowW(L"BUTTON", L"取消",
-                                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                kW - 120, 288, 100, 34, hwnd, Hm(TXC_CANCEL), hi, nullptr);
+    st.ok = CreateWindowW(L"BUTTON", L"确定",
+                          WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                          0, 0, 100, 34, hwnd, Hm(TXC_OK), hi, nullptr);
+    st.cancel = CreateWindowW(L"BUTTON", L"取消",
+                              WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                              0, 0, 100, 34, hwnd, Hm(TXC_CANCEL), hi, nullptr);
 
     for (HWND c = GetWindow(hwnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
         if (font) SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
-    (void)ok;
-    (void)cancel;
 
+    LayoutTextDlg(&st);
     UpdateBgColorVisibility(&st);
     RefreshSwatches(&st);
     darkui::ThemeChildren(hwnd);
@@ -305,7 +388,7 @@ TextDialogResult TextDialog::Show(HWND owner, TextAnn* existing) {
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
     SetForegroundWindow(hwnd);
-    SetFocus(text);
+    SetFocus(st.edit);
 
     MSG msg;
     while (!st.done) {

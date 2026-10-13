@@ -6,9 +6,18 @@ using namespace Gdiplus;
 
 namespace {
 
-const int kDlgW = 520;
+const int kDlgW = 600;
 const int kDlgH = 600;
 const int kWheelSize = 200;
+
+// ---- 顶部区布局（客户区坐标）----
+// 左侧色轮 200x200；右侧为「最近使用」4 列 × 2 行宫格 + 「当前颜色」长条预览
+const int kWheelX = 36, kWheelY = 40;
+const int kGridCols = 4, kGridRows = 2;
+const int kRecentCount = kGridCols * kGridRows; // 8
+const int kGridX = 264, kGridY = 46, kGridCell = 66, kGridGap = 14;
+const int kGridW = kGridCols * kGridCell + (kGridCols - 1) * kGridGap; // 306
+const int kPreviewX = 264, kPreviewY = 218, kPreviewW = kGridW, kPreviewH = 30;
 
 HICON g_cpBlankIcon = nullptr;
 
@@ -59,6 +68,7 @@ struct PickState {
     bool draggingWheel = false;
     bool draggingSlider = false;
     int sliderId = 0;
+    int hoverCell = -1;   // 最近使用宫格的悬停格（-1 = 无）
     bool updating = false;
     bool done = false;
     ColorResult result;
@@ -99,20 +109,109 @@ enum {
 };
 
 RECT WheelRect(HWND hwnd) {
-    RECT rc; GetClientRect(hwnd, &rc);
-    int x = (rc.right - kWheelSize) / 2;
-    return { x, 24, x + kWheelSize, 24 + kWheelSize };
+    (void)hwnd;
+    return { kWheelX, kWheelY, kWheelX + kWheelSize, kWheelY + kWheelSize };
+}
+
+// 「最近使用」宫格第 idx 格（0..7，行优先，最新在左上）
+RECT GridCellRect(int idx) {
+    int col = idx % kGridCols, row = idx / kGridCols;
+    int x = kGridX + col * (kGridCell + kGridGap);
+    int y = kGridY + row * (kGridCell + kGridGap);
+    return { x, y, x + kGridCell, y + kGridCell };
+}
+
+int GridHitTest(int x, int y) {
+    for (int i = 0; i < kRecentCount; ++i) {
+        RECT r = GridCellRect(i);
+        if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return i;
+    }
+    return -1;
+}
+
+RECT PreviewRect() {
+    return { kPreviewX, kPreviewY, kPreviewX + kPreviewW, kPreviewY + kPreviewH };
 }
 
 RECT SliderRect(HWND hwnd, int idx) {
     RECT rc; GetClientRect(hwnd, &rc);
     int left = 90;
     int right = rc.right - 100;
-    int top = 240 + idx * 44;
+    int top = 264 + idx * 44;
     return { left, top + 6, right, top + 28 };
 }
 
+// 半透明预览底色：棋盘格（体现透明度）
+void DrawChecker(HDC hdc, const RECT& rc, bool dark) {
+    HBRUSH brA = CreateSolidBrush(dark ? RGB(72, 72, 72) : RGB(255, 255, 255));
+    HBRUSH brB = CreateSolidBrush(dark ? RGB(96, 96, 96) : RGB(214, 214, 214));
+    const int cell = 8;
+    for (int y = rc.top; y < rc.bottom; y += cell) {
+        for (int x = rc.left; x < rc.right; x += cell) {
+            bool alt = (((x - rc.left) / cell) + ((y - rc.top) / cell)) % 2 == 1;
+            RECT c = { x, y,
+                       (std::min)(x + cell, static_cast<int>(rc.right)),
+                       (std::min)(y + cell, static_cast<int>(rc.bottom)) };
+            FillRect(hdc, &c, alt ? brB : brA);
+        }
+    }
+    DeleteObject(brA);
+    DeleteObject(brB);
+}
+
 const wchar_t* kSliderNames[] = { L"明度", L"R", L"G", L"B", L"透明度" };
+
+void AddRoundRect(GraphicsPath& p, REAL x, REAL y, REAL w, REAL h, REAL r) {
+    REAL d = 2 * r;
+    if (d > w) d = w;
+    if (d > h) d = h;
+    p.AddArc(x, y, d, d, 180.0f, 90.0f);
+    p.AddArc(x + w - d, y, d, d, 270.0f, 90.0f);
+    p.AddArc(x + w - d, y + h - d, d, d, 0.0f, 90.0f);
+    p.AddArc(x, y + h - d, d, d, 90.0f, 90.0f);
+    p.CloseFigure();
+}
+
+// 自绘「吸管」图标按钮（替代原来的文字「吸管（全屏取色）」）。
+// 造型按用户给的参考图：细长描边管身（圆头）＋ 饱满的实心胶头 ＋ 胶头下方一道小横杆。
+void DrawEyeButton(HDC hdc, const RECT& rc, bool pressed, bool dark) {
+    COLORREF bg = dark ? RGB(58, 58, 58) : RGB(240, 240, 240);
+    if (pressed) bg = dark ? RGB(38, 38, 38) : RGB(222, 222, 222);
+    HBRUSH br = CreateSolidBrush(bg);
+    FillRect(hdc, &rc, br);
+    DeleteObject(br);
+    HPEN bd = CreatePen(PS_SOLID, 1, dark ? RGB(92, 92, 92) : RGB(178, 178, 178));
+    HGDIOBJ oldPen = SelectObject(hdc, bd);
+    HGDIOBJ oldBr = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+    SelectObject(hdc, oldPen);
+    SelectObject(hdc, oldBr);
+    DeleteObject(bd);
+
+    Graphics g(hdc);
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    g.TranslateTransform(static_cast<REAL>((rc.left + rc.right) / 2),
+                         static_cast<REAL>((rc.top + rc.bottom) / 2));
+    g.RotateTransform(45.0f); // 吸嘴朝左下，胶头朝右上
+
+    // 局部坐标：+y 为吸嘴方向，长度 23.5、宽度 15，旋转 45° 后约 26px，正好放进按钮
+    COLORREF ink = dark ? RGB(226, 226, 226) : RGB(48, 48, 48);
+    SolidBrush sb(ToGpColor(ink));
+    Pen tube(ToGpColor(ink), 1.7f);
+    tube.SetLineJoin(LineJoinRound);
+
+    GraphicsPath body;
+    AddRoundRect(body, -2.0f, -5.0f, 4.0f, 15.5f, 2.0f);   // 管身（描边圆头）
+    g.DrawPath(&tube, &body);
+
+    GraphicsPath bulb;
+    AddRoundRect(bulb, -4.6f, -13.0f, 9.2f, 8.6f, 3.2f);   // 胶头（实心圆角）
+    g.FillPath(&sb, &bulb);
+
+    GraphicsPath bar;
+    AddRoundRect(bar, -7.4f, -6.2f, 14.8f, 2.9f, 1.4f);    // 横杆（实心，两侧各露一点）
+    g.FillPath(&sb, &bar);
+}
 
 void DrawWheel(HDC hdc, RECT rc, PickState& st) {
     Graphics g(hdc);
@@ -387,16 +486,49 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             RECT wr = WheelRect(hwnd);
             DrawWheel(mem, wr, *st);
 
+            bool dark = darkui::Dark();
             FontFamily family(L"Microsoft YaHei");
             Font font(&family, 13, FontStyleRegular, UnitPixel);
+            Font fontSm(&family, 12, FontStyleRegular, UnitPixel);
             COLORREF tcol = darkui::TextCol();
             SolidBrush fg(Color(255, GetRValue(tcol), GetGValue(tcol), GetBValue(tcol))); // 纯文字，无背景
 
-            // 右上角小色块预览（不遮挡左侧标签）
+            // ---- 最近使用：4x2 宫格（最新在左上；点击一键复用）----
+            g.DrawString(L"最近使用", -1, &fontSm,
+                         PointF(static_cast<REAL>(kGridX), 22.0f), &fg);
+            const auto& recent = Settings().recentColors;
+            for (int i = 0; i < kRecentCount; ++i) {
+                RECT cr = GridCellRect(i);
+                int cw = cr.right - cr.left, ch = cr.bottom - cr.top;
+                bool has = i < static_cast<int>(recent.size());
+                if (has) {
+                    SolidBrush sb(ToGpColor(recent[i]));
+                    g.FillRectangle(&sb, cr.left, cr.top, cw, ch);
+                } else {
+                    SolidBrush sb(ToGpColor(dark ? RGB(62, 62, 62) : RGB(238, 238, 238)));
+                    g.FillRectangle(&sb, cr.left, cr.top, cw, ch);
+                }
+                if (has && recent[i] == st->Current()) {
+                    // 当前色 = 该历史色：主题蓝描边提示
+                    Pen p(ToGpColor(Settings().themeColor), 2);
+                    g.DrawRectangle(&p, cr.left + 1, cr.top + 1, cw - 3, ch - 3);
+                } else if (st->hoverCell == i) {
+                    Pen p(ToGpColor(dark ? RGB(180, 180, 180) : RGB(120, 120, 120)), 2);
+                    g.DrawRectangle(&p, cr.left + 1, cr.top + 1, cw - 3, ch - 3);
+                } else {
+                    Pen p(ToGpColor(dark ? RGB(90, 90, 90) : RGB(190, 190, 190)), 1);
+                    g.DrawRectangle(&p, cr.left, cr.top, cw - 1, ch - 1);
+                }
+            }
+
+            // ---- 当前颜色预览（棋盘格底 + 半透明色块，直观体现透明度）----
+            g.DrawString(L"当前颜色", -1, &fontSm, PointF(264.0f, 196.0f), &fg);
+            RECT pr = PreviewRect();
+            DrawChecker(mem, pr, dark);
             SolidBrush pv(ToGpColor(st->Current(), static_cast<BYTE>(st->alpha)));
-            g.FillRectangle(&pv, rc.right - 48, 24, 28, 28);
-            Pen pen(Color(255, 100, 100, 100), 1);
-            g.DrawRectangle(&pen, rc.right - 48, 24, 28, 28);
+            g.FillRectangle(&pv, pr.left, pr.top, pr.right - pr.left, pr.bottom - pr.top);
+            Pen pen(Color(255, 120, 120, 120), 1);
+            g.DrawRectangle(&pen, pr.left, pr.top, pr.right - pr.left - 1, pr.bottom - pr.top - 1);
 
             // 左侧文字标签：无背景色，与滑杆同行
             for (int i = 0; i < 5; ++i) {
@@ -407,11 +539,7 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                               &fg);
             }
 
-            g.DrawString(L"HEX", -1, &font, PointF(16.0f, 468.0f), &fg);
-            SolidBrush pc(ToGpColor(st->Current(), static_cast<BYTE>(st->alpha)));
-            g.FillEllipse(&pc, static_cast<REAL>(rc.right - 48), 468.0f, 28.0f, 28.0f);
-            Pen ep(Color(255, 100, 100, 100), 1);
-            g.DrawEllipse(&ep, static_cast<REAL>(rc.right - 48), 468.0f, 28.0f, 28.0f);
+            g.DrawString(L"HEX", -1, &font, PointF(16.0f, 500.0f), &fg);
         }
 
         BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
@@ -426,6 +554,20 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (!st) return 0;
         int x = GET_X_LPARAM(lParam), y = GET_Y_LPARAM(lParam);
         if (msg == WM_LBUTTONDOWN) {
+            // 最近使用宫格：点选一键复用（RGB 生效，透明度保持不变）
+            int cell = GridHitTest(x, y);
+            if (cell >= 0) {
+                const auto& recent = Settings().recentColors;
+                if (cell < static_cast<int>(recent.size())) {
+                    COLORREF c = recent[cell];
+                    st->r = GetRValue(c);
+                    st->g = GetGValue(c);
+                    st->b = GetBValue(c);
+                    st->SyncFromRGB();
+                    RefreshAll(st);
+                }
+                return 0;
+            }
             RECT wr = WheelRect(hwnd);
             if (x >= wr.left && x <= wr.right && y >= wr.top && y <= wr.bottom) {
                 st->draggingWheel = true;
@@ -453,6 +595,11 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         if (msg == WM_MOUSEMOVE) {
             if (st->draggingWheel) { OnWheelClick(st, x, y); return 0; }
+            int hover = GridHitTest(x, y);
+            if (hover != st->hoverCell) {
+                st->hoverCell = hover;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
             if (st->draggingSlider) {
                 int v = SliderFromX(hwnd, st->sliderId, x);
                 int i = st->sliderId;
@@ -490,6 +637,8 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             st->result.ok = true;
             st->result.color = st->Current();
             st->result.alpha = static_cast<BYTE>(st->alpha);
+            // 记入「最近使用」宫格（去重 / 最新在前 / 最多 9 个，立刻写 ini）
+            Settings().PushRecentColor(st->result.color);
             st->done = true;
             DestroyWindow(hwnd);
             return 0;
@@ -552,6 +701,15 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
         }
         return 0;
+    }
+    case WM_DRAWITEM: {
+        auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+        if (dis && dis->CtlID == IDC_EYEDROP) {
+            DrawEyeButton(dis->hDC, dis->rcItem,
+                          (dis->itemState & ODS_SELECTED) != 0, darkui::Dark());
+            return TRUE;
+        }
+        return FALSE;
     }
     case WM_CLOSE:
         if (st) { st->result.ok = false; st->done = true; DestroyWindow(hwnd); }
@@ -710,16 +868,29 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, i
     HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
 
-    RECT alphaSr = SliderRect(hwnd, 4);
-    int hexW = alphaSr.right - alphaSr.left;
+    // HEX 输入框 + 吸管图标按钮（自绘：文字按钮改为吸管图标，一目了然）
+    // 右端与下方「取消」按钮右缘对齐（kDlgW-120+90 = kDlgW-30）
     HWND hex = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", st.hex.c_str(),
                                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                               alphaSr.left, 462, hexW, 30, hwnd,
+                               70, 496, 442, 30, hwnd,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HEX)), hi, nullptr);
-    HWND eye = CreateWindowW(L"BUTTON", L"吸管（全屏取色）",
-                             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                             alphaSr.left, 502, hexW, 34, hwnd,
+    HWND eye = CreateWindowW(L"BUTTON", L"",
+                             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                             524, 495, 46, 32, hwnd,
                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_EYEDROP)), hi, nullptr);
+    // 吸管按钮的悬浮说明（图标 + 气泡，保证功能可发现）
+    if (HWND tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+                                   WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                                   CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                                   hwnd, nullptr, hi, nullptr)) {
+        TOOLINFOW ti = {};
+        ti.cbSize = sizeof(ti);
+        ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        ti.hwnd = hwnd;
+        ti.uId = reinterpret_cast<UINT_PTR>(eye);
+        ti.lpszText = const_cast<LPWSTR>(L"全屏取色（吸管）");
+        SendMessageW(tip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+    }
 
     int btnY = kDlgH - 48;
     int btnW = 90, btnH = 32;

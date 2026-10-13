@@ -21,6 +21,40 @@ void IniWriteInt(const wchar_t* section, const wchar_t* key, int val) {
     IniWrite(section, key, std::to_wstring(val));
 }
 
+// ---- 最近使用颜色（取色器 9 宫格）序列化 ----
+bool IsHexColorToken(const std::wstring& t) {
+    if (t.size() != 7 || t[0] != L'#') return false;
+    for (size_t i = 1; i < t.size(); ++i) {
+        if (!iswxdigit(static_cast<wint_t>(t[i]))) return false;
+    }
+    return true;
+}
+
+std::wstring RecentColorsToIni(const std::vector<COLORREF>& v) {
+    std::wstring s;
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) s += L",";
+        s += util::ToHex(v[i]);
+    }
+    return s;
+}
+
+std::vector<COLORREF> ParseRecentColors(const std::wstring& s) {
+    std::vector<COLORREF> out;
+    size_t pos = 0;
+    for (;;) {
+        size_t comma = s.find(L',', pos);
+        std::wstring tok = (comma == std::wstring::npos) ? s.substr(pos)
+                                                         : s.substr(pos, comma - pos);
+        tok = util::TrimToken(tok);
+        if (IsHexColorToken(tok) && static_cast<int>(out.size()) < AppSettings::kRecentColorMax)
+            out.push_back(util::ParseHex(tok));
+        if (comma == std::wstring::npos) break;
+        pos = comma + 1;
+    }
+    return out;
+}
+
 bool SystemPrefersDark() {
     HKEY key = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER,
@@ -193,6 +227,8 @@ void AppSettings::Load() {
 
     borderCopyToExternal = IniInt(L"Settings", L"BorderCopyToExternal", 1) != 0;
 
+    recentColors = ParseRecentColors(IniValue(L"Settings", L"RecentColors", L""));
+
     mineruToken = util::TrimToken(IniValue(L"Settings", L"MinerUToken", L""));
     volcApiKey  = util::TrimToken(IniValue(L"Settings", L"VolcApiKey", L""));
 }
@@ -212,10 +248,21 @@ void AppSettings::Save() const {
     IniWrite(L"Settings", L"DrawColor", util::ToHex(drawColor));
     IniWriteInt(L"Settings", L"DrawAlpha", drawAlpha);
     IniWriteInt(L"Settings", L"BorderCopyToExternal", borderCopyToExternal ? 1 : 0);
+    IniWrite(L"Settings", L"RecentColors", RecentColorsToIni(recentColors));
     IniWrite(L"Settings", L"MinerUToken", util::TrimToken(mineruToken));
     IniWrite(L"Settings", L"VolcApiKey", util::TrimToken(volcApiKey));
 
     // 版本号 / 打包时间属于编译期信息（设置界面直接读 APP_VERSION 等宏），
     // 不写入 ini；顺手清掉历史版本遗留的 [Meta] 段
     WritePrivateProfileSectionW(L"Meta", nullptr, util::GetIniPath().c_str());
+}
+
+void AppSettings::PushRecentColor(COLORREF c) {
+    recentColors.erase(std::remove(recentColors.begin(), recentColors.end(), c),
+                       recentColors.end());
+    recentColors.insert(recentColors.begin(), c);
+    if (static_cast<int>(recentColors.size()) > kRecentColorMax)
+        recentColors.resize(kRecentColorMax);
+    // 只更新这一个键，避免在取色器里触发整份配置写盘
+    IniWrite(L"Settings", L"RecentColors", RecentColorsToIni(recentColors));
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 #include "util.h"
 
 enum class ThemeMode {
@@ -37,12 +38,20 @@ struct AppSettings {
     // 程序内粘贴（当前画布/其他页签）始终不加边框。默认开启。
     bool borderCopyToExternal = true;
 
+    // 取色器「最近使用」颜色（最新在前，最多 kRecentColorMax 个；持久化到 ini）
+    // 宫格按窗口比例取 4 列 × 2 行 = 8 个，比 3x3 更协调
+    static const int kRecentColorMax = 8;
+    std::vector<COLORREF> recentColors;
+
     // API tokens (persisted; never hardcode secrets in source)
     std::wstring mineruToken;  // MinerU API — 提取内容
     std::wstring volcApiKey;   // 火山引擎 AI MediaKit — 魔法消除
 
     void Load();
     void Save() const;
+
+    // 记录一次「使用过」的颜色：去重、插到最前、截断到 9 个，并立刻写 ini
+    void PushRecentColor(COLORREF c);
 
     bool IsDarkTheme() const;
     COLORREF BgColor() const;

@@ -520,13 +520,17 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_TIMER:
         if (wParam == kTimerTooltip) {
             KillTimer(hwnd, kTimerTooltip);
-            if (hoverLeft_ >= 0 && hoverLeft_ < static_cast<int>(leftBtns_.size())) {
-                POINT pt;
-                GetCursorPos(&pt);
-                ScreenToClient(hwnd, &pt);
-                // 仍在同一按钮上才显示
-                if (HitLeftButton(pt.x, pt.y) == hoverLeft_) {
-                    ShowTooltip(pt.x, pt.y, leftBtns_[hoverLeft_].tip);
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            // 仍停留在同一按钮上才显示（左侧图标按钮；否则顶部的「截图 / 长截图」）
+            int li = HitLeftButton(pt.x, pt.y);
+            if (li >= 0 && li == hoverLeft_) {
+                ShowTooltip(pt.x, pt.y, leftBtns_[li].tip);
+            } else {
+                int ti = HitTopButton(pt.x, pt.y);
+                if (ti >= 0 && ti == hoverTop_ && !topBtns_[ti].tip.empty()) {
+                    ShowTooltip(pt.x, pt.y, topBtns_[ti].tip);
                 }
             }
         } else if (wParam == kTimerBeginCapture) {
@@ -775,19 +779,23 @@ void App::BuildToolbars() {
     topBtns_.clear();
     leftBtns_.clear();
 
-    auto addTop = [&](int id, const wchar_t* text) {
+    // tip 为空 = 不弹悬浮提示（顶部按钮文字本身已说明功能）；
+    // 「截图 / 长截图」额外带上快捷键，方便用户随时看到组合键。
+    auto addTop = [&](int id, const wchar_t* text, const std::wstring& tip = L"") {
         ToolButton b;
         b.id = id;
         b.text = text;
-        b.tip = text;
+        b.tip = tip;
         b.isLeft = false;
         // 「图标(14) + 间隙(4) + 文字(12/汉字) + 两侧留白(6)」按字数自适应宽度
         b.w = 6 + 14 + 4 + 12 * static_cast<int>(wcslen(text)) + 6;
         if (b.w < 56) b.w = 56;
         topBtns_.push_back(b);
     };
-    addTop(ID_CMD_CAPTURE, L"截图");
-    addTop(ID_CMD_LONG_CAPTURE, L"长截图");
+    addTop(ID_CMD_CAPTURE, L"截图",
+           L"截图（" + Settings().hotkeyText + L"）");
+    addTop(ID_CMD_LONG_CAPTURE, L"长截图",
+           L"长截图（" + Settings().longHotkeyText + L"）");
     addTop(ID_CMD_MOSAIC, L"马赛克");
     addTop(ID_CMD_EXTRACT, L"提取内容");
     addTop(ID_CMD_EXTRACT_VECTOR, L"提取矢量图");
@@ -2100,24 +2108,26 @@ void App::OnMouseMove(int x, int y) {
     TrackMouseEvent(&tme);
 
     int left = HitLeftButton(x, y);
-    int top = HitTopButton(x, y); // 顶部按钮本身有中文，不显示悬浮提示
+    // 顶部多数按钮自带中文，不弹提示；仅「截图 / 长截图」带快捷键提示（tip 为空则不弹）
+    int top = HitTopButton(x, y);
+    bool topHasTip = top >= 0 && !topBtns_[top].tip.empty();
 
-    // 仅在进入/离开左侧图标按钮时更新，避免每帧重绘导致闪烁
-    if (left != hoverLeft_) {
+    // 仅在进入/离开按钮时更新，避免每帧重绘导致闪烁
+    if (left != hoverLeft_ || top != hoverTop_) {
+        bool hadTip = (hoverLeft_ >= 0 &&
+                       hoverLeft_ < static_cast<int>(leftBtns_.size())) ||
+                      (hoverTop_ >= 0 && hoverTop_ < static_cast<int>(topBtns_.size()) &&
+                       !topBtns_[hoverTop_].tip.empty());
         hoverLeft_ = left;
+        hoverTop_ = top;
+        bool nowHasTip = (left >= 0) || topHasTip;
         KillTimer(hwnd_, kTimerTooltip);
-        if (left >= 0) {
-            HideTooltip();
+        if (hadTip || nowHasTip) HideTooltip();
+        if (nowHasTip) {
             // 延迟约 0.35s 再显示，更稳定
-            SetTimer(hwnd_, 1, 350, nullptr);
-        } else {
-            HideTooltip();
+            SetTimer(hwnd_, kTimerTooltip, 350, nullptr);
         }
         InvalidateRect(hwnd_, nullptr, FALSE);
-    }
-    if (top != hoverTop_) {
-        hoverTop_ = top;
-        InvalidateRect(hwnd_, nullptr, FALSE); // 悬停/按下态变化需要重绘
     }
     if (pressedTop_ >= 0) InvalidateRect(hwnd_, nullptr, FALSE);
 }

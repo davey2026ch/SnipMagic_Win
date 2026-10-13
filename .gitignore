@@ -29,3 +29,4 @@ cmake_install.cmake
 work/
 __pycache__/
 测试文件/color_ui_verify/
+测试文件/ui_verify_20261013/
