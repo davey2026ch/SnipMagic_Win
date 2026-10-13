@@ -274,12 +274,20 @@ def finish(code):
 
 
 # ---------------- ini 预置：最近使用颜色 ----------------
-# 宫格 24 格 = 前 3 格固定（红/黑/白）+ 21 格历史；预置 21 个不同颜色填满历史区
+# 宫格 24 格 = 前 3 格固定（红/黑/白）+ 21 格历史
 SEED = ["#%02X%02X%02X" % ((i * 11 + 5) % 256, (i * 47 + 9) % 256, (i * 97 + 3) % 256)
         for i in range(21)]
 assert len(set(SEED)) == 21, "预置颜色必须互不相同"
-# 点「确定」记一个白色后：白色最新在前，最旧的第 21 个被挤掉
-EXPECT_AFTER_WHITE = "#FFFFFF," + ",".join(SEED[:20])
+FIXED = ["#FF0000", "#000000", "#FFFFFF"]
+assert not (set(SEED) & set(FIXED)), "预置颜色不能撞上固定色"
+# 预置 ini 时故意把 3 个固定色也写进历史（24 条），程序读入后应把固定色剔除、只留 21 条真实历史
+INI_SEED_RAW = ",".join(FIXED + SEED)
+INI_AFTER_CLEAN = ",".join(SEED)
+# 用固定白格子确认一次：固定色不记入历史 → ini 不变
+EXPECT_AFTER_WHITE = INI_AFTER_CLEAN
+# 再用 HEX 框输入一个非固定色确认：最新在前、挤掉最旧一条
+CUSTOM = "#123456"
+EXPECT_AFTER_CUSTOM = CUSTOM + "," + ",".join(SEED[:20])
 
 
 ORIG_INI = None
@@ -309,11 +317,11 @@ def seed_ini():
     for ln in lines:
         out.append(ln)
         if not inserted and ln.strip() == b"[Settings]":
-            out.append(("RecentColors=" + ",".join(SEED)).encode("ascii"))
+            out.append(("RecentColors=" + INI_SEED_RAW).encode("ascii"))
             inserted = True
     if not inserted:
         out.insert(0, b"[Settings]")
-        out.insert(1, ("RecentColors=" + ",".join(SEED)).encode("ascii"))
+        out.insert(1, ("RecentColors=" + INI_SEED_RAW).encode("ascii"))
     with open(INI, "wb") as f:
         f.write(b"\r\n".join(out) + b"\r\n")
 
@@ -336,7 +344,7 @@ kill_app()
 time.sleep(1.0)
 backup_ini()
 seed_ini()
-log("已预置 ini 最近使用颜色: %s" % ",".join(SEED), True)
+log("已预置 ini 最近使用颜色（含 3 个固定色，共 24 条）: %s" % INI_SEED_RAW, True)
 
 proc = subprocess.Popen([os.path.join(DIST, "SnipMagic.exe")], cwd=DIST)
 main = wait_window("ScreenshotToolMainWindow", 12)
@@ -353,6 +361,13 @@ s = dpi / 96.0
 ox, oy = client_origin(main)
 log("主窗口就绪 DPI=%d 客户区原点=(%d,%d)" % (dpi, ox, oy), True)
 grab(main, "01-main.png")
+
+# 启动读配置时应把混进历史的固定色（红/黑/白）剔除
+cleaned = read_ini_recent()
+log("B0a 启动后 ini 历史色已剔除固定色: %s" % cleaned,
+    (cleaned or "").upper() == INI_AFTER_CLEAN.upper())
+n_fixed_in_ini = sum(1 for c in (cleaned or "").split(",") if c.upper() in FIXED)
+log("B0b ini 历史色里不含红/黑/白（重复项已清掉）", n_fixed_in_ini == 0)
 
 
 def top_btn_center(idx):
@@ -570,7 +585,7 @@ click(center_of_rect(rect_of(btn_map(pk)["确定"][0]))[0],
       center_of_rect(rect_of(btn_map(pk)["确定"][0]))[1])
 time.sleep(0.6)
 recent1 = read_ini_recent()
-log("B6 确定后 ini RecentColors=%s（期望 %s）" % (recent1, EXPECT_AFTER_WHITE),
+log("B6 用固定白确认一次后 ini 未新增记录（%s）" % recent1,
     (recent1 or "").upper() == EXPECT_AFTER_WHITE.upper())
 secs = ini_sections()
 log("B6b ini 只有一段 [Settings]（未被写成重复段）: %s" % secs,
@@ -581,6 +596,23 @@ _tok = [ln for ln in _raw.replace(b"\r\n", b"\n").split(b"\n")
         if ln.startswith(b"MinerUToken=")]
 log("B6c 写盘后未破坏既有配置（MinerUToken 非空）",
     bool(_tok) and len(_tok[-1].split(b"=", 1)[1]) > 10)
+
+# 非固定色照旧入库：用 HEX 框输入 #123456 后确定 → 最新在前、挤掉最旧一条
+pk2b = click_until("ScreenshotToolColorPicker", x, y)
+if pk2b:
+    hx = find_child(pk2b, "Edit", 1002)
+    buf2 = ctypes.create_unicode_buffer(CUSTOM)
+    user32.SendMessageW(hx, 0x000C, 0, ctypes.cast(buf2, ctypes.c_void_p))  # WM_SETTEXT
+    time.sleep(0.3)
+    click(*center_of_rect(rect_of(btn_map(pk2b)["确定"][0])))
+    time.sleep(0.6)
+    recent2 = read_ini_recent()
+    log("B6d 用 HEX 输入 %s 确认后 ini=%s" % (CUSTOM, recent2),
+        (recent2 or "").upper() == EXPECT_AFTER_CUSTOM.upper())
+    log("B6e 历史里依然没有红/黑/白",
+        not any(c.upper() in FIXED for c in (recent2 or "").split(",")))
+else:
+    log("B6d 取色器未重新弹出", False)
 
 # ================= B2. 重开程序验证 ini 回读 =================
 kill_app()
@@ -613,8 +645,8 @@ for idx, (name, want) in enumerate([("固定红", "#FF0000"), ("固定黑", "#00
     hh = wait_hex(pk2, want)
     log("B7 重启后宫格第 %d 格仍是%s（HEX=%s）→ 固定色不被替换"
         % (idx + 1, name, hh), (hh or "").upper() == want)
-# 第 4 格起为历史色，顺序应等于 ini 里的顺序（白色最新在最前）
-ORDER = EXPECT_AFTER_WHITE.split(",")
+# 第 4 格起为历史色，顺序应等于 ini 里的顺序（#123456 最新在最前）
+ORDER = EXPECT_AFTER_CUSTOM.split(",")
 gx, gy = grid_center(3)
 click(pox + gx, poy + gy)
 h4 = wait_hex(pk2, ORDER[0])

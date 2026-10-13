@@ -131,14 +131,12 @@ int GridHitTest(int x, int y) {
 
 // 宫格第 i 格的颜色；返回 false 表示该格还没有颜色（空格子）
 bool GridCellColor(int i, COLORREF& out) {
-    static const COLORREF kFixed[kFixedColorCount] = {
-        RGB(0xFF, 0x00, 0x00),   // 红
-        RGB(0x00, 0x00, 0x00),   // 黑
-        RGB(0xFF, 0xFF, 0xFF),   // 白
-    };
     if (i < 0 || i >= kRecentCount) return false;
     if (i < kFixedColorCount) {
-        out = kFixed[i];
+        int n = 0;
+        const COLORREF* fixed = PickerFixedColors(n);   // 固定常用色：红 / 黑 / 白
+        if (i >= n) return false;
+        out = fixed[i];
         return true;
     }
     const auto& recent = Settings().recentColors;

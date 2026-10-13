@@ -47,8 +47,14 @@ std::vector<COLORREF> ParseRecentColors(const std::wstring& s) {
         std::wstring tok = (comma == std::wstring::npos) ? s.substr(pos)
                                                          : s.substr(pos, comma - pos);
         tok = util::TrimToken(tok);
-        if (IsHexColorToken(tok) && static_cast<int>(out.size()) < AppSettings::kRecentColorMax)
-            out.push_back(util::ParseHex(tok));
+        if (IsHexColorToken(tok)) {
+            COLORREF c = util::ParseHex(tok);
+            // 固定常用色（红/黑/白）在宫格前 3 格恒定存在，历史里再出现就是重复，读入时丢掉
+            if (!IsPickerFixedColor(c) &&
+                static_cast<int>(out.size()) < AppSettings::kRecentColorMax) {
+                out.push_back(c);
+            }
+        }
         if (comma == std::wstring::npos) break;
         pos = comma + 1;
     }
@@ -227,7 +233,15 @@ void AppSettings::Load() {
 
     borderCopyToExternal = IniInt(L"Settings", L"BorderCopyToExternal", 1) != 0;
 
-    recentColors = ParseRecentColors(IniValue(L"Settings", L"RecentColors", L""));
+    // 历史色里若混着固定常用色（红/黑/白），读入时就剔除并存回，避免与固定格重复
+    {
+        std::wstring rawRecent = IniValue(L"Settings", L"RecentColors", L"");
+        recentColors = ParseRecentColors(rawRecent);
+        std::wstring cleaned = RecentColorsToIni(recentColors);
+        if (!rawRecent.empty() && cleaned != rawRecent) {
+            IniWrite(L"Settings", L"RecentColors", cleaned);
+        }
+    }
 
     mineruToken = util::TrimToken(IniValue(L"Settings", L"MinerUToken", L""));
     volcApiKey  = util::TrimToken(IniValue(L"Settings", L"VolcApiKey", L""));
@@ -258,6 +272,8 @@ void AppSettings::Save() const {
 }
 
 void AppSettings::PushRecentColor(COLORREF c) {
+    // 红/黑/白是宫格里的固定常用色，用它们取色不记历史（否则历史区会重复显示一遍）
+    if (IsPickerFixedColor(c)) return;
     recentColors.erase(std::remove(recentColors.begin(), recentColors.end(), c),
                        recentColors.end());
     recentColors.insert(recentColors.begin(), c);

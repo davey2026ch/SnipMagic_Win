@@ -62,6 +62,27 @@ struct AppSettings {
     COLORREF CanvasBg() const;
 };
 
+// 取色器宫格前 3 格的固定常用色（红 / 黑 / 白）。
+// 它们固定占位、不参与「最近使用」：既不会被历史色替换，用它们取色时也不记进历史（避免重复显示）。
+inline const COLORREF* PickerFixedColors(int& count) {
+    static const COLORREF kFixed[3] = {
+        RGB(0xFF, 0x00, 0x00),   // 红
+        RGB(0x00, 0x00, 0x00),   // 黑
+        RGB(0xFF, 0xFF, 0xFF),   // 白
+    };
+    count = 3;
+    return kFixed;
+}
+
+inline bool IsPickerFixedColor(COLORREF c) {
+    int n = 0;
+    const COLORREF* fixed = PickerFixedColors(n);
+    for (int i = 0; i < n; ++i) {
+        if (fixed[i] == c) return true;
+    }
+    return false;
+}
+
 AppSettings& Settings();
 
 // Parse / format hotkey text helpers
