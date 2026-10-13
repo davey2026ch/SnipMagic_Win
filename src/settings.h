@@ -39,8 +39,9 @@ struct AppSettings {
     bool borderCopyToExternal = true;
 
     // 取色器「最近使用」颜色（最新在前，最多 kRecentColorMax 个；持久化到 ini）
-    // 宫格按窗口比例取 4 列 × 2 行 = 8 个，比 3x3 更协调
-    static const int kRecentColorMax = 8;
+    // 宫格 8 列 × 3 行 = 24 格，其中前 3 格是固定色（红/黑/白，不可替换），
+    // 因此「最近使用」最多记 21 个
+    static const int kRecentColorMax = 21;
     std::vector<COLORREF> recentColors;
 
     // API tokens (persisted; never hardcode secrets in source)

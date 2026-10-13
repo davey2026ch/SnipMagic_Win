@@ -167,10 +167,7 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             if (s_inColor) return 0;
             s_inColor = true;
             if (id == TXC_COLOR) {
-                auto r = ColorPicker::Show(hwnd, st->color, st->alpha,
-                                           ColorPicker::kQuickWhite |
-                                           ColorPicker::kQuickRed |
-                                           ColorPicker::kQuickBlack);
+                auto r = ColorPicker::Show(hwnd, st->color, st->alpha);
                 s_inColor = false;
                 if (r.ok) {
                     st->color = r.color;
@@ -179,10 +176,7 @@ LRESULT CALLBACK TextDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 }
             } else {
                 // 背景颜色取色器按当前背景色初始化（背景不涉及透明度）
-                auto r = ColorPicker::Show(hwnd, st->bgColor, 255,
-                                           ColorPicker::kQuickWhite |
-                                           ColorPicker::kQuickRed |
-                                           ColorPicker::kQuickBlack);
+                auto r = ColorPicker::Show(hwnd, st->bgColor, 255);
                 s_inColor = false;
                 if (r.ok) {
                     st->bgColor = r.color;

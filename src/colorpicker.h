@@ -8,16 +8,9 @@ struct ColorResult {
 };
 
 namespace ColorPicker {
-// 快捷色按钮位标志：在「确定」按钮左侧提供一键设置的快捷按钮
-enum QuickColor {
-    kQuickWhite = 0x1, // 白色
-    kQuickRed   = 0x2, // 红色
-    kQuickBlack = 0x4, // 黑色
-};
-
-// quickButtons：kQuickWhite/kQuickRed/kQuickBlack 的组合，0 表示不显示快捷按钮
-ColorResult Show(HWND owner, COLORREF initial, BYTE initialAlpha = 255,
-                 int quickButtons = 0);
+// 「确定 / 取消」按钮左侧原有的红/黑/白快捷按钮已取消，
+// 这三个常用色改为宫格里固定不可替换的前 3 格（见 colorpicker.cpp 的 kFixedColorCount）
+ColorResult Show(HWND owner, COLORREF initial, BYTE initialAlpha = 255);
 
 bool Eyedropper(HWND owner, COLORREF& outColor);
 }

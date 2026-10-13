@@ -237,6 +237,27 @@ def topmost(hwnd):
     user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
 
 
+def bring_to_front(hwnd):
+    """宿主程序（WorkBuddy 等）偶尔抢到置顶，点击前重新把被测窗口顶上来"""
+    topmost(hwnd)
+    user32.BringWindowToTop(hwnd)
+    user32.SetForegroundWindow(hwnd)
+    time.sleep(0.35)
+
+
+def click_until(wait_cls, x, y, tries=3, timeout=4.0, settle=0.6):
+    """点按钮直到目标窗口出现；点空/被别的窗口挡住时自动重点一次"""
+    for i in range(tries):
+        bring_to_front(main)
+        click(x, y, settle=settle)
+        w = wait_window(wait_cls, timeout)
+        if w:
+            if i:
+                print("  （第 %d 次点击才生效）" % (i + 1), flush=True)
+            return w
+    return None
+
+
 def kill_app():
     subprocess.run("taskkill /F /IM SnipMagic.exe", shell=True, capture_output=True)
 
@@ -253,9 +274,12 @@ def finish(code):
 
 
 # ---------------- ini 预置：最近使用颜色 ----------------
-SEED = ["#112233", "#223344", "#334455", "#445566",
-        "#556677", "#667788", "#778899", "#8899AA"]
-EXPECT_AFTER_WHITE = "#FFFFFF," + ",".join(SEED[:7])
+# 宫格 24 格 = 前 3 格固定（红/黑/白）+ 21 格历史；预置 21 个不同颜色填满历史区
+SEED = ["#%02X%02X%02X" % ((i * 11 + 5) % 256, (i * 47 + 9) % 256, (i * 97 + 3) % 256)
+        for i in range(21)]
+assert len(set(SEED)) == 21, "预置颜色必须互不相同"
+# 点「确定」记一个白色后：白色最新在前，最旧的第 21 个被挤掉
+EXPECT_AFTER_WHITE = "#FFFFFF," + ",".join(SEED[:20])
 
 
 ORIG_INI = None
@@ -347,12 +371,13 @@ def lbtn_center(idx):
             oy + topH + pad + idx * (lh + lgap) + lh / 2)
 
 
-# 取色器宫格：4 列 x 2 行，格 66 间距 14（客户区坐标）
-GRID_X, GRID_Y, CELL, GAP = 264, 46, 66, 14
+# 取色器宫格：8 列 x 3 行，格 32 间距 8（客户区坐标）
+GRID_X, GRID_Y, CELL, GAP = 258, 46, 32, 8
+GRID_COLS = 8
 
 
 def grid_center(i):
-    col, row = i % 4, i // 4
+    col, row = i % GRID_COLS, i // GRID_COLS
     return (GRID_X + col * (CELL + GAP) + CELL // 2,
             GRID_Y + row * (CELL + GAP) + CELL // 2)
 
@@ -442,7 +467,7 @@ def check_eye_icon(eye_btn, tag):
 
 
 def check_picker_ui(pk, tag):
-    """取色器公共断言：尺寸 / 吸管图标按钮（无文字）/ 宫格可用"""
+    """取色器公共断言：尺寸 / 吸管图标按钮（无文字）/ 底部只有确定取消"""
     w, h = client_size(pk)
     log("B[%s] 取色器客户区 %dx%d" % (tag, w, h), 590 <= w <= 615 and 590 <= h <= 615)
     bm = btn_map(pk)
@@ -452,6 +477,9 @@ def check_picker_ui(pk, tag):
     has_eye_text = any(t.startswith("吸管") for t in bm.keys())
     log("B[%s] 吸管按钮为图标（存在 id=1003 且无文字的按钮，且没有「吸管…」文字按钮）"
         % tag, no_text and not has_eye_text)
+    names = sorted(t for t, hs in bm.items() if t)
+    log("B[%s] 按钮只有 确定/取消（红/黑/白快捷按钮已删除）: %s" % (tag, names),
+        names == ["取消", "确定"])
     if eye:
         # 按钮完整落在客户区内（此前 600 宽窗口下曾越界被裁）
         r = ctrl_rect_client(pk, eye[0])
@@ -463,59 +491,80 @@ def check_picker_ui(pk, tag):
 
 # ================= B. 取色器 =================
 x, y = lbtn_center(14)  # 左侧第 15 个 = 颜色
-click(x, y)
-pk = wait_window("ScreenshotToolColorPicker", 6)
+pk = click_until("ScreenshotToolColorPicker", x, y)
 if not pk:
     log("B0 工具栏取色器未弹出", False)
-    grab(None, "05-miss.png")
+    grab(main, "05-miss.png")
     finish(1)
 time.sleep(0.4)
 grab(pk, "05-picker-toolbar-seed.png")
 
 eye_btn = check_picker_ui(pk, "工具栏")
 
-# 点第 1 格（最新）= 预置的 #112233
+# 前 3 格是固定色：红 / 黑 / 白（原快捷按钮改到这里，不可被历史色替换）
 gx, gy = grid_center(0)
 pox, poy = client_origin(pk)
 click(pox + gx, poy + gy)
-h1 = wait_hex(pk, SEED[0])
-log("B1 点宫格第 1 格 → HEX=%s（期望 %s）" % (h1, SEED[0]),
-    (h1 or "").upper() == SEED[0].upper())
+h1 = wait_hex(pk, "#FF0000")
+log("B1 宫格第 1 格（固定红）→ HEX=%s" % h1, (h1 or "").upper() == "#FF0000")
 grab(pk, "06-picker-grid1.png")
 
-# 点第 5 格（第二行第一列）= #556677
-gx, gy = grid_center(4)
+gx, gy = grid_center(1)
 click(pox + gx, poy + gy)
-h2 = wait_hex(pk, SEED[4])
-log("B2 点宫格第 5 格 → HEX=%s（期望 %s）" % (h2, SEED[4]),
-    (h2 or "").upper() == SEED[4].upper())
+h1b = wait_hex(pk, "#000000")
+log("B1b 宫格第 2 格（固定黑）→ HEX=%s" % h1b, (h1b or "").upper() == "#000000")
 
-# 吸管图标按钮：全屏取色仍可用（点屏幕右下角，取到的色应与该点像素一致）
-sw = user32.GetSystemMetrics(0)
-sh = user32.GetSystemMetrics(1)
-PX, PY = sw - 200, sh - 200
+gx, gy = grid_center(2)
+click(pox + gx, poy + gy)
+h2 = wait_hex(pk, "#FFFFFF")
+log("B1c 宫格第 3 格（固定白）→ HEX=%s" % h2, (h2 or "").upper() == "#FFFFFF")
+
+# 第 4 格起是「最近使用」历史色：第 4 格 = 最新的一个预置色
+gx, gy = grid_center(3)
+click(pox + gx, poy + gy)
+h2b = wait_hex(pk, SEED[0])
+log("B2 宫格第 4 格（历史第 1 个）→ HEX=%s（期望 %s）" % (h2b, SEED[0]),
+    (h2b or "").upper() == SEED[0].upper())
+
+gx, gy = grid_center(9)
+click(pox + gx, poy + gy)
+h2c = wait_hex(pk, SEED[6])
+log("B2b 宫格第 10 格（历史第 7 个）→ HEX=%s（期望 %s）" % (h2c, SEED[6]),
+    (h2c or "").upper() == SEED[6].upper())
+
+gx, gy = grid_center(23)
+click(pox + gx, poy + gy)
+h2d = wait_hex(pk, SEED[20])
+log("B2c 宫格最后一格（历史第 21 个）→ HEX=%s（期望 %s）" % (h2d, SEED[20]),
+    (h2d or "").upper() == SEED[20].upper())
+
+# 吸管图标按钮：全屏取色仍可用。
+# 取色点选在主窗口画布空白处（纯色 230,230,230，屏幕内容不会自己变），
+# 期望值直接从冻屏截图里读 —— 桌面上有别的程序窗口，取桌面像素不稳定。
+PX, PY = ox + 200, oy + 200
 if eye_btn:
     ex, ey = center_screen(eye_btn)
     click(ex, ey, settle=1.2)
     eye_win = wait_window("ScreenshotToolEyedropper", 5)
     log("B3 点吸管图标 → 全屏取色覆盖窗出现", eye_win is not None)
     if eye_win:
-        grab(eye_win, "07-eyedropper.png")
-        pick_rgb = sample(PX, PY)
+        shot = grab(eye_win, "07-eyedropper.png")
+        el, et, _, _ = rect_of(eye_win)
+        frozen = Image.open(shot).convert("RGB")
+        pick_rgb = frozen.getpixel((PX - el, PY - et))   # 冻屏图即当时的屏幕内容
         click(PX, PY, settle=1.0)
         wait_gone("ScreenshotToolEyedropper", 5)
         time.sleep(0.5)
         h3 = wait_hex(pk, rgb2hex(pick_rgb), 3)
-        log("B4 全屏取色结果 HEX=%s，屏幕该点像素=%s"
+        log("B4 全屏取色结果 HEX=%s，冻屏图该点像素=%s"
             % (h3, rgb2hex(pick_rgb)),
             (h3 or "").upper() == rgb2hex(pick_rgb).upper())
 
-# 点「白色」快捷钮后确定 → 写入 ini（最新在前、去重、上限 8）
-bm = btn_map(pk)
-click(center_of_rect(rect_of(bm["白色"][0]))[0],
-      center_of_rect(rect_of(bm["白色"][0]))[1])
+# 点固定白格后确定 → 写入 ini（最新在前、去重、上限 21）
+gx, gy = grid_center(2)
+click(pox + gx, poy + gy)
 hw = wait_hex(pk, "#FFFFFF")
-log("B5 点「白色」→ HEX=%s" % hw, (hw or "").upper() == "#FFFFFF")
+log("B5 点固定白格 → HEX=%s" % hw, (hw or "").upper() == "#FFFFFF")
 grab(pk, "08-picker-white.png")
 click(center_of_rect(rect_of(btn_map(pk)["确定"][0]))[0],
       center_of_rect(rect_of(btn_map(pk)["确定"][0]))[1])
@@ -549,31 +598,50 @@ s = dpi / 96.0
 time.sleep(0.3)
 
 x, y = lbtn_center(14)
-click(x, y)
-pk2 = wait_window("ScreenshotToolColorPicker", 6)
+pk2 = click_until("ScreenshotToolColorPicker", x, y)
 if not pk2:
     log("B7 重启后取色器未弹出", False)
     finish(1)
 time.sleep(0.4)
 grab(pk2, "09-picker-after-restart.png")
 pox, poy = client_origin(pk2)
-gx, gy = grid_center(0)
-click(pox + gx, poy + gy)
-h4 = wait_hex(pk2, "#FFFFFF")
-log("B7 重启后宫格第 1 格=白色（HEX=%s）→ ini 回读成功" % h4,
-    (h4 or "").upper() == "#FFFFFF")
-# 重启后的顺序应等于 ini 里的顺序（白色最新在最前，其余顺延）
+# 重启后前 3 格仍是固定红/黑/白（写入过历史色也不会被替换）
+for idx, (name, want) in enumerate([("固定红", "#FF0000"), ("固定黑", "#000000"),
+                                    ("固定白", "#FFFFFF")]):
+    gx, gy = grid_center(idx)
+    click(pox + gx, poy + gy)
+    hh = wait_hex(pk2, want)
+    log("B7 重启后宫格第 %d 格仍是%s（HEX=%s）→ 固定色不被替换"
+        % (idx + 1, name, hh), (hh or "").upper() == want)
+# 第 4 格起为历史色，顺序应等于 ini 里的顺序（白色最新在最前）
 ORDER = EXPECT_AFTER_WHITE.split(",")
+gx, gy = grid_center(3)
+click(pox + gx, poy + gy)
+h4 = wait_hex(pk2, ORDER[0])
+log("B7b 重启后宫格第 4 格=%s（HEX=%s）→ ini 回读成功" % (ORDER[0], h4),
+    (h4 or "").upper() == ORDER[0].upper())
 gx, gy = grid_center(4)
 click(pox + gx, poy + gy)
-h5 = wait_hex(pk2, ORDER[4])
-log("B8 重启后宫格第 5 格=%s（HEX=%s）→ 顺序正确" % (ORDER[4], h5),
-    (h5 or "").upper() == ORDER[4].upper())
+h5 = wait_hex(pk2, ORDER[1])
+log("B8 重启后宫格第 5 格=%s（HEX=%s）→ 顺序正确" % (ORDER[1], h5),
+    (h5 or "").upper() == ORDER[1].upper())
 gx, gy = grid_center(7)
 click(pox + gx, poy + gy)
-h5b = wait_hex(pk2, ORDER[7])
-log("B8b 重启后宫格第 8 格=%s（HEX=%s）→ 末位正确" % (ORDER[7], h5b),
-    (h5b or "").upper() == ORDER[7].upper())
+h5b = wait_hex(pk2, ORDER[4])
+log("B8b 重启后宫格第 8 格（历史第 5 个）=%s（HEX=%s）→ 顺序正确" % (ORDER[4], h5b),
+    (h5b or "").upper() == ORDER[4].upper())
+# 最后一格（第 24 格）= 历史第 21 个：验证宫格确实有 24 格且坐标对得上
+gx, gy = grid_center(23)
+click(pox + gx, poy + gy)
+h5c = wait_hex(pk2, ORDER[20])
+log("B8c 点宫格最后一格（历史第 21 个）=%s（HEX=%s）→ 24 格可点" % (ORDER[20], h5c),
+    (h5c or "").upper() == ORDER[20].upper())
+# 第 24 格右侧之外（客户区里但那一片是空白）不应改变颜色
+gx, gy = grid_center(23)
+click(pox + gx + CELL, poy + gy, settle=0.5)
+h5d = read_hex(pk2)
+log("B8d 宫格右侧空白处点击不影响颜色（HEX=%s）" % h5d,
+    (h5d or "").upper() == ORDER[20].upper())
 grab(pk2, "10-picker-grid-order.png")
 bm2 = btn_map(pk2)
 click(*center_of_rect(rect_of(bm2["取消"][0])))
@@ -632,9 +700,14 @@ if set_btns:
         pox, poy = client_origin(tp)
         gx, gy = grid_center(0)
         click(pox + gx, poy + gy)
-        h6 = wait_hex(tp, "#FFFFFF")
-        log("C5 文字颜色取色器宫格第 1 格=白色（HEX=%s）" % h6,
-            (h6 or "").upper() == "#FFFFFF")
+        h6 = wait_hex(tp, "#FF0000")
+        log("C5 文字颜色取色器第 1 格=固定红（HEX=%s）" % h6,
+            (h6 or "").upper() == "#FF0000")
+        gx, gy = grid_center(2)
+        click(pox + gx, poy + gy)
+        h6b = wait_hex(tp, "#FFFFFF")
+        log("C5b 文字颜色取色器第 3 格=固定白（HEX=%s）" % h6b,
+            (h6b or "").upper() == "#FFFFFF")
         click(*center_of_rect(rect_of(btn_map(tp)["取消"][0])))
         time.sleep(0.4)
     else:

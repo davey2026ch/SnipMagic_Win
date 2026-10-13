@@ -11,13 +11,16 @@ const int kDlgH = 600;
 const int kWheelSize = 200;
 
 // ---- 顶部区布局（客户区坐标）----
-// 左侧色轮 200x200；右侧为「最近使用」4 列 × 2 行宫格 + 「当前颜色」长条预览
+// 左侧色轮 200x200；右侧为「最近使用」小格子宫格（8 列 × 3 行 = 24 个）+ 「当前颜色」长条预览
 const int kWheelX = 36, kWheelY = 40;
-const int kGridCols = 4, kGridRows = 2;
-const int kRecentCount = kGridCols * kGridRows; // 8
-const int kGridX = 264, kGridY = 46, kGridCell = 66, kGridGap = 14;
-const int kGridW = kGridCols * kGridCell + (kGridCols - 1) * kGridGap; // 306
-const int kPreviewX = 264, kPreviewY = 218, kPreviewW = kGridW, kPreviewH = 30;
+const int kGridCols = 8, kGridRows = 3;
+const int kRecentCount = kGridCols * kGridRows; // 24
+// 宫格前 3 格是固定色（原「红色 / 黑色 / 白色」快捷按钮），不参与「最近使用」的替换
+const int kFixedColorCount = 3;
+const int kGridX = 258, kGridY = 46, kGridCell = 32, kGridGap = 8;
+const int kGridW = kGridCols * kGridCell + (kGridCols - 1) * kGridGap; // 312 → 258..570
+const int kPreviewLabelY = 166;
+const int kPreviewX = kGridX, kPreviewY = 186, kPreviewW = kGridW, kPreviewH = 30;
 
 HICON g_cpBlankIcon = nullptr;
 
@@ -101,9 +104,6 @@ enum {
     IDC_EYEDROP = 1003,
     IDC_OK = 1004,
     IDC_CANCEL = 1005,
-    IDC_WHITE = 1006,
-    IDC_BLACK = 1007,
-    IDC_RED = 1008,
     IDC_SLIDER_BASE = 1100,
     IDC_EDIT_BASE = 1200,
 };
@@ -127,6 +127,27 @@ int GridHitTest(int x, int y) {
         if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return i;
     }
     return -1;
+}
+
+// 宫格第 i 格的颜色；返回 false 表示该格还没有颜色（空格子）
+bool GridCellColor(int i, COLORREF& out) {
+    static const COLORREF kFixed[kFixedColorCount] = {
+        RGB(0xFF, 0x00, 0x00),   // 红
+        RGB(0x00, 0x00, 0x00),   // 黑
+        RGB(0xFF, 0xFF, 0xFF),   // 白
+    };
+    if (i < 0 || i >= kRecentCount) return false;
+    if (i < kFixedColorCount) {
+        out = kFixed[i];
+        return true;
+    }
+    const auto& recent = Settings().recentColors;
+    int k = i - kFixedColorCount;
+    if (k < static_cast<int>(recent.size())) {
+        out = recent[k];
+        return true;
+    }
+    return false;
 }
 
 RECT PreviewRect() {
@@ -493,23 +514,23 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             COLORREF tcol = darkui::TextCol();
             SolidBrush fg(Color(255, GetRValue(tcol), GetGValue(tcol), GetBValue(tcol))); // 纯文字，无背景
 
-            // ---- 最近使用：4x2 宫格（最新在左上；点击一键复用）----
+            // ---- 常用色 + 最近使用：8x3 小宫格（前 3 格固定红/黑/白，其余为历史色）----
             g.DrawString(L"最近使用", -1, &fontSm,
                          PointF(static_cast<REAL>(kGridX), 22.0f), &fg);
-            const auto& recent = Settings().recentColors;
             for (int i = 0; i < kRecentCount; ++i) {
                 RECT cr = GridCellRect(i);
                 int cw = cr.right - cr.left, ch = cr.bottom - cr.top;
-                bool has = i < static_cast<int>(recent.size());
+                COLORREF cellColor = RGB(0, 0, 0);
+                bool has = GridCellColor(i, cellColor);
                 if (has) {
-                    SolidBrush sb(ToGpColor(recent[i]));
+                    SolidBrush sb(ToGpColor(cellColor));
                     g.FillRectangle(&sb, cr.left, cr.top, cw, ch);
                 } else {
                     SolidBrush sb(ToGpColor(dark ? RGB(62, 62, 62) : RGB(238, 238, 238)));
                     g.FillRectangle(&sb, cr.left, cr.top, cw, ch);
                 }
-                if (has && recent[i] == st->Current()) {
-                    // 当前色 = 该历史色：主题蓝描边提示
+                if (has && cellColor == st->Current()) {
+                    // 当前色 = 该色：主题蓝描边提示
                     Pen p(ToGpColor(Settings().themeColor), 2);
                     g.DrawRectangle(&p, cr.left + 1, cr.top + 1, cw - 3, ch - 3);
                 } else if (st->hoverCell == i) {
@@ -520,9 +541,18 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     g.DrawRectangle(&p, cr.left, cr.top, cw - 1, ch - 1);
                 }
             }
+            // 固定色与历史色之间画一道竖线（只画第一行），提示前 3 格是固定的
+            {
+                RECT c2 = GridCellRect(kFixedColorCount - 1);
+                int sepX = c2.right + kGridGap / 2;
+                Pen sep(ToGpColor(dark ? RGB(120, 120, 120) : RGB(150, 150, 150)), 1);
+                g.DrawLine(&sep, sepX, c2.top, sepX, c2.bottom);
+            }
 
             // ---- 当前颜色预览（棋盘格底 + 半透明色块，直观体现透明度）----
-            g.DrawString(L"当前颜色", -1, &fontSm, PointF(264.0f, 196.0f), &fg);
+            g.DrawString(L"当前颜色", -1, &fontSm,
+                         PointF(static_cast<REAL>(kPreviewX),
+                                static_cast<REAL>(kPreviewLabelY)), &fg);
             RECT pr = PreviewRect();
             DrawChecker(mem, pr, dark);
             SolidBrush pv(ToGpColor(st->Current(), static_cast<BYTE>(st->alpha)));
@@ -554,12 +584,11 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (!st) return 0;
         int x = GET_X_LPARAM(lParam), y = GET_Y_LPARAM(lParam);
         if (msg == WM_LBUTTONDOWN) {
-            // 最近使用宫格：点选一键复用（RGB 生效，透明度保持不变）
+            // 宫格：点选一键复用（RGB 生效，透明度保持不变）；前 3 格为固定红/黑/白
             int cell = GridHitTest(x, y);
             if (cell >= 0) {
-                const auto& recent = Settings().recentColors;
-                if (cell < static_cast<int>(recent.size())) {
-                    COLORREF c = recent[cell];
+                COLORREF c = RGB(0, 0, 0);
+                if (GridCellColor(cell, c)) {
                     st->r = GetRValue(c);
                     st->g = GetGValue(c);
                     st->b = GetBValue(c);
@@ -625,8 +654,7 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         int id = LOWORD(wParam);
         int code = HIWORD(wParam);
         // 按钮只响应 BN_CLICKED，避免重复触发
-        if (id == IDC_OK || id == IDC_CANCEL || id == IDC_EYEDROP ||
-            id == IDC_WHITE || id == IDC_RED || id == IDC_BLACK) {
+        if (id == IDC_OK || id == IDC_CANCEL || id == IDC_EYEDROP) {
             if (code != BN_CLICKED && code != 0) return 0;
         }
         if (id == IDC_OK) {
@@ -637,7 +665,7 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             st->result.ok = true;
             st->result.color = st->Current();
             st->result.alpha = static_cast<BYTE>(st->alpha);
-            // 记入「最近使用」宫格（去重 / 最新在前 / 最多 9 个，立刻写 ini）
+            // 记入「最近使用」宫格（去重 / 最新在前 / 上限见 AppSettings::kRecentColorMax，立刻写 ini）
             Settings().PushRecentColor(st->result.color);
             st->done = true;
             DestroyWindow(hwnd);
@@ -647,27 +675,6 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             st->result.ok = false;
             st->done = true;
             DestroyWindow(hwnd);
-            return 0;
-        }
-        if (id == IDC_WHITE) {
-            st->r = 255; st->g = 255; st->b = 255;
-            st->SyncFromRGB();
-            st->alpha = 255;
-            RefreshAll(st);
-            return 0;
-        }
-        if (id == IDC_RED) {
-            st->r = 255; st->g = 0; st->b = 0;
-            st->SyncFromRGB();
-            st->alpha = 255;
-            RefreshAll(st);
-            return 0;
-        }
-        if (id == IDC_BLACK) {
-            st->r = 0; st->g = 0; st->b = 0;
-            st->SyncFromRGB();
-            st->alpha = 255;
-            RefreshAll(st);
             return 0;
         }
         if (id == IDC_EYEDROP) {
@@ -819,7 +826,7 @@ bool ColorPicker::Eyedropper(HWND owner, COLORREF& outColor) {
     return st.ok;
 }
 
-ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, int quickButtons) {
+ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha) {
     // 防止重复弹出（按钮双击/消息重入导致叠两层窗口）
     static bool s_inShow = false;
     if (s_inShow) return ColorResult{};
@@ -895,31 +902,7 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, i
     int btnY = kDlgH - 48;
     int btnW = 90, btnH = 32;
     int okX = kDlgW - 230;
-    // 快捷色按钮统一 66 宽，从「确定」左侧向左依次排列：
-    // [红色][黑色][白色] [确定][取消]
-    const int kQuickW = 66, kQuickGap = 8;
-    int qx = okX - kQuickGap - kQuickW;
-    HWND whiteBtn = nullptr, redBtn = nullptr, blackBtn = nullptr;
-    if (quickButtons & kQuickWhite) {
-        whiteBtn = CreateWindowW(L"BUTTON", L"白色",
-                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                 qx, btnY, kQuickW, btnH, hwnd,
-                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_WHITE)), hi, nullptr);
-        qx -= kQuickW + kQuickGap;
-    }
-    if (quickButtons & kQuickBlack) {
-        blackBtn = CreateWindowW(L"BUTTON", L"黑色",
-                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                 qx, btnY, kQuickW, btnH, hwnd,
-                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_BLACK)), hi, nullptr);
-        qx -= kQuickW + kQuickGap;
-    }
-    if (quickButtons & kQuickRed) {
-        redBtn = CreateWindowW(L"BUTTON", L"红色",
-                               WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                               qx, btnY, kQuickW, btnH, hwnd,
-                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RED)), hi, nullptr);
-    }
+    // 原来「确定」左侧的红/黑/白快捷按钮已移除，改由宫格前 3 个固定格承担
     HWND ok = CreateWindowW(L"BUTTON", L"确定",
                             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
                             okX, btnY, btnW, btnH, hwnd,
@@ -944,9 +927,6 @@ ColorResult ColorPicker::Show(HWND owner, COLORREF initial, BYTE initialAlpha, i
         SendMessageW(eye, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        if (whiteBtn) SendMessageW(whiteBtn, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        if (redBtn) SendMessageW(redBtn, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        if (blackBtn) SendMessageW(blackBtn, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         for (int i = 0; i < 5; ++i)
             SendMessageW(GetDlgItem(hwnd, IDC_EDIT_BASE + i), WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
