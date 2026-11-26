@@ -194,21 +194,35 @@ else:
     print(body.decode("utf-8", "replace")[:400])
 
 # ============ 匿名复核 ============
+# Gitee 匿名 API 经常 403 Rate Limit，拿不到 JSON 时退回「直接下载附件比哈希」
 st, body = http("https://gitee.com/api/v5/repos/" + REPO_GITEE + "/releases/latest")
-latest = json.loads(body.decode("utf-8"))
-log("Gitee latest tag = %s" % latest.get("tag_name"), latest.get("tag_name") == TAG)
-seen = 0
-for a in (latest.get("assets") or []):
-    n = a.get("name", "")
-    if re.match(r"^v?\d+\.\d+\.\d+(\.\d+)?\.(zip|tar\.gz)$", n):
-        continue
-    if not n.endswith(".exe"):
-        continue
-    seen += 1
-    st, data = http(a["browser_download_url"])
-    match = (n == "截图大师SnipMagic.exe") and sha256b(data) == exe_sha
-    log("Gitee 附件 %s 下载 %d 字节 哈希一致=%s" % (n, len(data), match), match)
-log("Gitee 附件只有 exe 一个", seen == 1)
+gitee_api_ok = False
+try:
+    latest = json.loads(body.decode("utf-8"))
+    gitee_api_ok = True
+except Exception:
+    latest = {}
+if gitee_api_ok:
+    log("Gitee latest tag = %s" % latest.get("tag_name"), latest.get("tag_name") == TAG)
+    seen = 0
+    for a in (latest.get("assets") or []):
+        n = a.get("name", "")
+        if re.match(r"^v?\d+\.\d+\.\d+(\.\d+)?\.(zip|tar\.gz)$", n):
+            continue
+        if not n.endswith(".exe"):
+            continue
+        seen += 1
+        st, data = http(a["browser_download_url"])
+        match = (n == "截图大师SnipMagic.exe") and sha256b(data) == exe_sha
+        log("Gitee 附件 %s 下载 %d 字节 哈希一致=%s" % (n, len(data), match), match)
+    log("Gitee 附件只有 exe 一个", seen == 1)
+else:
+    print("Gitee 匿名 API 被限流（HTTP %d），改用直连下载复核" % st, flush=True)
+    url = ("https://gitee.com/" + REPO_GITEE + "/releases/download/" + TAG + "/"
+           + urllib.parse.quote("截图大师SnipMagic.exe"))
+    st2, data = http(url)
+    match = st2 == 200 and sha256b(data) == exe_sha
+    log("Gitee 直连下载 截图大师SnipMagic.exe %d 字节 哈希一致=%s" % (len(data), match), match)
 
 st, body = http(API_GH + "/releases/latest",
                 headers={"Accept": "application/vnd.github+json"})
