@@ -124,12 +124,66 @@ Canvas::GifControls Canvas::ComputeGifControls(int w, int h) const {
 
 Bitmap* Canvas::GifFrameBitmap(int idx) {
     if (!IsGifDoc()) return nullptr;
-    if (idx == gifCacheIdx_ && gifCache_) return gifCache_.get();
+    if (idx == gifCacheIdx_ && gifCache_ && gifCacheRev_ == doc_->gifRev) return gifCache_.get();
     auto bmp = doc_->gif->Decode(idx);
     if (!bmp) return nullptr;
     gifCache_ = std::move(bmp);
     gifCacheIdx_ = idx;
+    gifCacheRev_ = doc_->gifRev;
     return gifCache_.get();
+}
+
+// 当前帧在客户区的目标矩形。预览绘制与鼠标坐标换算共用这一套数字，
+// 保证"画上去的位置"和"看到的帧像素"严丝合缝。
+bool Canvas::GifPreviewRect(RectF& dst) const {
+    dst = RectF(0, 0, 0, 0);
+    if (!IsGifDoc() || !hwnd_) return false;
+    const int fw = doc_->gif->width;
+    const int fh = doc_->gif->height;
+    if (fw <= 0 || fh <= 0) return false;
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    GifLayout L = ComputeGifLayout(rc.right, rc.bottom);
+    const int dpi = CanvasDpi(hwnd_);
+    const int availW = (std::max)(16, static_cast<int>(L.preview.right) - util::Scale(24, dpi));
+    const int availH = (std::max)(16, static_cast<int>(L.preview.bottom) - util::Scale(24, dpi));
+    float fitZ = 1.0f;
+    if (fw > availW || fh > availH) {
+        fitZ = (std::min)(static_cast<float>(availW) / fw, static_cast<float>(availH) / fh);
+    }
+    const float z = fitZ * doc_->gifZoom;
+    const REAL dw = fw * z;
+    const REAL dh = fh * z;
+    const REAL dx = L.preview.right / 2.0f - dw / 2.0f + doc_->gifPanX;
+    const REAL dy = L.preview.bottom / 2.0f - dh / 2.0f + doc_->gifPanY;
+    dst = RectF(dx, dy, dw, dh);
+    return dw >= 1.0f && dh >= 1.0f;
+}
+
+// 这个位置按下，是否应该进入"标注编辑"而不是平移/框选
+bool Canvas::GifWantsAnnotationEdit(int x, int y) {
+    if (!IsGifDoc() || tool_ == Tool::View) return false;
+    float ix = 0, iy = 0;
+    ClientToImage(x, y, ix, iy);
+    if (ix < 0 || iy < 0 || ix > static_cast<float>(doc_->gif->width) ||
+        iy > static_cast<float>(doc_->gif->height))
+        return false;   // 点在画面外（棋盘格上）不当编辑
+
+    // 文字 / 序号 / 各种图形与画笔：点画面就是画
+    if (tool_ != Tool::Select) return true;
+
+    // 选择工具：命中已有标注（或它的控制点）才编辑
+    if (doc_->GetSelected() &&
+        HitHandleOnAnn(doc_->GetSelected(), ix, iy) != HandleId::None)
+        return true;
+    if (doc_->HitTest(ix, iy) >= 0) return true;
+    if (doc_->GetSelected()) {
+        RectF b;
+        doc_->GetSelected()->GetBounds(b);
+        if (util::PtInRectF(b, ix, iy)) return true;
+    }
+    // 空白处：没放大时拖框选（马赛克/复制用），放大了就留给平移
+    return doc_->gifZoom <= 1.001f;
 }
 
 Bitmap* Canvas::GifThumb(int idx) {
@@ -141,7 +195,8 @@ Bitmap* Canvas::GifThumb(int idx) {
     if (doc_->gifThumbs[static_cast<size_t>(idx)])
         return doc_->gifThumbs[static_cast<size_t>(idx)].get();
 
-    auto full = doc_->gif->Decode(idx);
+    // 该帧上还有没保存的标注：缩略图也要显示标注，做到"所见即保存后"
+    auto full = doc_->GifFrameHasEdits(idx) ? doc_->RenderGifFrame(idx) : doc_->gif->Decode(idx);
     if (!full) return nullptr;
     RECT rc;
     GetClientRect(hwnd_, &rc);
@@ -219,6 +274,19 @@ void Canvas::SetGifFrame(int idx, bool pause) {
     int f = idx;
     if (f < 0) f = doc_->gifLoop ? n - 1 : 0;
     if (f >= n) f = doc_->gifLoop ? 0 : n - 1;
+    if (f != doc_->gifFrame) {
+        // 标注跟着帧走：先把当前帧的标注收进它的槽位，切帧后再把目标帧的装回来
+        doc_->GifStashAnnotations();
+        doc_->gifFrame = f;
+        doc_->GifLoadAnnotations();
+        // 撤销栈只对同一帧有意义，切帧即清空，避免把别的帧的标注"撤销回来"
+        doc_->undoStack.clear();
+        doc_->redoStack.clear();
+        doc_->ClearRegion();
+        gifEditing_ = false;
+        dragMode_ = DragMode::None;
+        draft_.reset();
+    }
     doc_->gifFrame = f;
     doc_->gifNextTick = 0;
     if (pause) {
@@ -270,21 +338,15 @@ void Canvas::DrawGifView(Graphics& g, int w, int h) {
     if (n > 0) {
         if (doc_->gifFrame < 0 || doc_->gifFrame >= n) doc_->gifFrame = 0;
         Bitmap* frame = GifFrameBitmap(doc_->gifFrame);
-        if (frame) {
+        RectF dst;
+        if (frame && GifPreviewRect(dst)) {
             const int fw = static_cast<int>(frame->GetWidth());
             const int fh = static_cast<int>(frame->GetHeight());
-            const int availW = (std::max)(16, static_cast<int>(L.preview.right) - util::Scale(24, dpi));
-            const int availH = (std::max)(16, static_cast<int>(L.preview.bottom) - util::Scale(24, dpi));
-            float fitZ = 1.0f;
-            if (fw > availW || fh > availH) {
-                fitZ = (std::min)(static_cast<float>(availW) / fw,
-                                  static_cast<float>(availH) / fh);
-            }
-            const float z = fitZ * doc_->gifZoom;
-            const int dw = (std::max)(1, static_cast<int>(fw * z + 0.5f));
-            const int dh = (std::max)(1, static_cast<int>(fh * z + 0.5f));
-            const int dx = static_cast<int>(L.preview.right / 2.0f - dw / 2.0f + doc_->gifPanX + 0.5f);
-            const int dy = static_cast<int>(L.preview.bottom / 2.0f - dh / 2.0f + doc_->gifPanY + 0.5f);
+            const float z = (fw > 0) ? dst.Width / static_cast<float>(fw) : 1.0f;
+            const int dw = (std::max)(1, static_cast<int>(dst.Width + 0.5f));
+            const int dh = (std::max)(1, static_cast<int>(dst.Height + 0.5f));
+            const int dx = static_cast<int>(std::floor(dst.X + 0.5f));
+            const int dy = static_cast<int>(std::floor(dst.Y + 0.5f));
             // 放大后画面会超出预览区，裁掉溢出的部分（不能画到缩略图条上）
             Region oldClip;
             g.GetClip(&oldClip);
@@ -295,6 +357,22 @@ void Canvas::DrawGifView(Graphics& g, int w, int h) {
             SolidBrush shadow(Color(45, 0, 0, 0));
             g.FillRectangle(&shadow, dx - 1, dy - 1, dw + 2, dh + 2);
             g.DrawImage(frame, Rect(dx, dy, dw, dh), 0, 0, fw, fh, UnitPixel);
+
+            // 标注层：与普通截图同一套标注，坐标是帧像素，按预览倍率缩放，
+            // 并裁在画面之内（画到棋盘格上会让人误以为超出画面也算）
+            {
+                Region frameClip;
+                g.GetClip(&frameClip);
+                g.SetClip(Rect(dx, dy, dw, dh));
+                GraphicsState st = g.Save();
+                g.TranslateTransform(static_cast<REAL>(dx), static_cast<REAL>(dy));
+                g.ScaleTransform(z, z);
+                if (draft_ && tool_ != Tool::View) draft_->Draw(g);
+                doc_->DrawAnnotations(g, false);
+                DrawRegionOverlay(g, z);
+                g.Restore(st);
+                g.SetClip(&frameClip);
+            }
             g.SetClip(&oldClip);
         }
     }
@@ -504,13 +582,14 @@ void Canvas::GifMouseDown(int x, int y) {
         return;
     }
     if (PtInRect(&C.saveFrame, pt)) {
+        // 保存帧＝当前帧 + 这一帧上的标注（和保存 GIF 后看到的一致）
         App::Instance().SaveFrameInteractive(
-            doc_->CurrentGifFrame(),
+            doc_->RenderGifFrame(doc_->gifFrame),
             doc_->name + L"_" + std::to_wstring(doc_->gifFrame + 1));
         return;
     }
     if (PtInRect(&C.saveTab, pt)) {
-        auto bmp = doc_->CurrentGifFrame();
+        auto bmp = doc_->RenderGifFrame(doc_->gifFrame);
         if (bmp) {
             const int f = doc_->gifFrame + 1;
             App::Instance().AddDocument(std::move(bmp));
@@ -564,8 +643,21 @@ void Canvas::GifMouseDown(int x, int y) {
         }
         return;
     }
-    // 预览区：按下先当作"可能拖动画面"，松开时若没拖动才算点击（播放/暂停）
+    // 预览区：先在画面里"编辑"（标注/框选），否则当拖动平移
     if (PtInRect(&L.preview, pt)) {
+        const bool wantEdit = GifWantsAnnotationEdit(x, y);
+        if (wantEdit) {
+            // 播放中开始标注：先停下，否则松手时可能已经跳到别的帧上去了
+            if (doc_->gifPlaying) {
+                doc_->gifPlaying = false;
+                doc_->gifNextTick = 0;
+                UpdateGifTimer();
+                App::Instance().UpdateStatus();
+            }
+            gifEditing_ = true;
+            OnMouseDown(x, y, false);
+            return;
+        }
         gifPanDrag_ = true;
         gifPanMoved_ = false;
         gifPanLastX_ = x;
@@ -575,6 +667,21 @@ void Canvas::GifMouseDown(int x, int y) {
 
 void Canvas::GifMouseMove(int x, int y) {
     if (!IsGifDoc()) return;
+    // 中键拖动：任何时候都能平移画面（选了绘图工具也不挡）
+    if (gifMidPan_) {
+        const int dx = x - gifPanLastX_;
+        const int dy = y - gifPanLastY_;
+        gifPanLastX_ = x;
+        gifPanLastY_ = y;
+        if (dx || dy) GifPanBy(dx, dy);
+        return;
+    }
+    // 正在画/拖标注：整条鼠标流程交给画布逻辑（坐标换算已是帧像素）
+    if (gifEditing_) {
+        OnMouseMove(x, y);
+        return;
+    }
+
     RECT rc;
     GetClientRect(hwnd_, &rc);
     GifLayout L = ComputeGifLayout(rc.right, rc.bottom);
@@ -627,7 +734,13 @@ void Canvas::GifMouseMove(int x, int y) {
     }
 }
 
-void Canvas::GifMouseUp() {
+void Canvas::GifMouseUp(int x, int y) {
+    if (gifEditing_) {
+        gifEditing_ = false;
+        OnMouseUp(x, y);
+        AfterGifEdit();
+        return;
+    }
     if (gifPanDrag_) {
         gifPanDrag_ = false;
         gifPanMoved_ = false;
@@ -635,6 +748,99 @@ void Canvas::GifMouseUp() {
         return;
     }
     gifDragThumb_ = false;
+}
+
+// 标注变了：当前帧缩略图要重画，状态栏的「未保存编辑」也要更新
+void Canvas::AfterGifEdit() {
+    if (!IsGifDoc()) return;
+    if (doc_->gifFrame >= 0 &&
+        doc_->gifFrame < static_cast<int>(doc_->gifThumbs.size())) {
+        doc_->gifThumbs[static_cast<size_t>(doc_->gifFrame)].reset();
+    }
+    Refresh();
+    App::Instance().UpdateStatus();
+}
+
+// 帧被增删/像素被改：解码缓存和缩略图全部失效，滚动条夹回范围，播放停下
+void Canvas::AfterGifFramesChanged() {
+    if (!IsGifDoc()) return;
+    gifCacheIdx_ = -1;
+    gifCache_.reset();
+    gifCacheRev_ = doc_->gifRev;
+    gifEditing_ = false;
+    gifDragThumb_ = false;
+    gifPanDrag_ = false;
+    gifMidPan_ = false;
+    gifPressed_ = 0;
+    doc_->gifPlaying = false;
+    doc_->gifNextTick = 0;
+    doc_->gifStripScroll =
+        (std::max)(0, (std::min)(doc_->gifStripScroll, GifMaxScroll()));
+    UpdateGifTimer();
+    Refresh();
+    App::Instance().UpdateStatus();
+}
+
+// 缩略图右键菜单：删当前帧 / 删左侧全部 / 删右侧全部（GIF 文件在保存时自动更新）
+void Canvas::GifRightClick(int x, int y) {
+    if (!IsGifDoc()) return;
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    GifLayout L = ComputeGifLayout(rc.right, rc.bottom);
+    const int n = doc_->GifFrameCount();
+    if (n <= 0) return;
+    // 只在缩略图条上有反应（含序号/毫秒那一行）
+    if (y < L.strip.top || y >= L.strip.bottom) return;
+    if ((L.thumbW + L.gap) <= 0) return;
+    int idx = (x - L.padX + doc_->gifStripScroll) / (L.thumbW + L.gap);
+    if (idx < 0 || idx >= n) return;
+    const int cellLeft = L.padX + idx * (L.thumbW + L.gap) - doc_->gifStripScroll;
+    if (x < cellLeft || x > cellLeft + L.thumbW) return;
+    if (idx != doc_->gifFrame) SetGifFrame(idx, true);
+
+    const int leftCnt = idx;
+    const int rightCnt = n - idx - 1;
+
+    HMENU menu = CreatePopupMenu();
+    const UINT delFlags = (n > 1) ? MF_STRING : (MF_STRING | MF_GRAYED);
+    AppendMenuW(menu, delFlags, 1, L"删除当前帧");
+    std::wstring leftText = leftCnt > 0
+        ? util::Format(L"删除左侧全部帧（%d 帧）", leftCnt)
+        : std::wstring(L"删除左侧全部帧");
+    std::wstring rightText = rightCnt > 0
+        ? util::Format(L"删除右侧全部帧（%d 帧）", rightCnt)
+        : std::wstring(L"删除右侧全部帧");
+    AppendMenuW(menu, (leftCnt > 0 ? MF_STRING : (MF_STRING | MF_GRAYED)), 2, leftText.c_str());
+    AppendMenuW(menu, (rightCnt > 0 ? MF_STRING : (MF_STRING | MF_GRAYED)), 3, rightText.c_str());
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 4, L"保存 GIF（把编辑写入文件）");
+
+    POINT sp = { x, y };
+    ClientToScreen(hwnd_, &sp);
+    const int cmd = TrackPopupMenu(menu,
+                                   TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
+                                   sp.x, sp.y, 0, hwnd_, nullptr);
+    DestroyMenu(menu);
+    if (cmd == 0) return;
+
+    int from = 0, to = 0;
+    switch (cmd) {
+    case 1: from = idx; to = idx; break;
+    case 2: from = 0; to = idx - 1; break;
+    case 3: from = idx + 1; to = n - 1; break;
+    case 4: App::Instance().SaveDoc(App::Instance().ActiveIndex()); return;
+    default: return;
+    }
+    const int delCnt = to - from + 1;
+    if (delCnt <= 0) return;
+    if (!doc_->GifDeleteFrames(from, to)) {
+        App::Instance().ShowStatusMessage(L"至少需要保留 1 帧");
+        return;
+    }
+    AfterGifFramesChanged();
+    App::Instance().ShowStatusMessage(
+        util::Format(L"已删除 %d 帧，剩余 %d 帧（保存 GIF 时写入文件）",
+                     delCnt, doc_->GifFrameCount()));
 }
 
 // ---- 预览缩放 / 平移 ----
@@ -802,6 +1008,13 @@ bool Canvas::HandleGifKey(WPARAM vk) {
         ToggleGifPlay();
         return true;
     }
+    case VK_DELETE:
+        // 删掉选中的标注（删帧走缩略图右键菜单，避免误删整帧）
+        if (doc_->GetSelected()) {
+            DeleteSelection();
+            AfterGifEdit();
+        }
+        return true;
     default:
         return false;
     }

@@ -14,6 +14,14 @@ public:
     // 动图页签（GIF 录制结果）：非空时本页签是 GIF，base 只用于缩略显示（当前帧）
     std::shared_ptr<gifcodec::Anim> gif;
 
+    // ---- GIF 帧内编辑：把动图当成普通截图逐帧标注 ----
+    // 每帧的标注，与 gif->frames 同下标。当前帧的标注就存在 annotations 里，
+    // 切帧 / 删帧 / 保存前用 GifStashAnnotations / GifLoadAnnotations 搬运，
+    // 保证「标注跟着帧走」。保存 GIF 时 GifBakeAll() 把标注烙进帧像素。
+    std::vector<std::vector<std::unique_ptr<Annotation>>> gifFrameAnns;
+    // 帧数据被改过（烙入/马赛克/删帧）就 +1，画布据此丢弃解码缓存与缩略图
+    int gifRev = 0;
+
     // GIF 播放视图状态（每页签独立；由画布维护）
     int gifFrame = 0;              // 当前帧
     bool gifPlaying = false;       // 播放中（默认不自动播放，只有点播放按钮才播）
@@ -29,6 +37,9 @@ public:
     struct Snapshot {
         std::vector<std::unique_ptr<Annotation>> annotations;
         std::unique_ptr<Gdiplus::Bitmap> base;
+        // GIF：马赛克这类「直接改帧像素」的操作要能把原始帧数据还回来
+        int gifIdx = -1;
+        gifcodec::Frame gifFrameData;
     };
     std::vector<Snapshot> undoStack;
     std::vector<Snapshot> redoStack;
@@ -73,6 +84,23 @@ public:
     // 取当前帧位图（独立副本，调用方拥有）
     std::unique_ptr<Gdiplus::Bitmap> CurrentGifFrame() const;
 
+    // ---- GIF 帧内编辑 ----
+    void GifEnsureAnnSlots();                 // 让 gifFrameAnns 与帧数对齐
+    void GifStashAnnotations();               // annotations -> gifFrameAnns[gifFrame]
+    void GifLoadAnnotations();                // gifFrameAnns[gifFrame] -> annotations
+    bool GifFrameHasEdits(int idx) const;     // 该帧上是否还有没烙进去的标注
+    bool GifAnyEdits() const;                 // 任意帧有未保存的标注
+    int  GifEditedFrameCount() const;
+    // 取某帧的最终画面（帧像素 + 该帧标注），调用方拥有
+    std::unique_ptr<Gdiplus::Bitmap> RenderGifFrame(int idx) const;
+    // 把所有帧上的标注烙进帧像素并重新压缩（保存 GIF 前调用）。返回烙入的帧数
+    int  GifBakeAll();
+    // 在当前帧上对指定矩形做马赛克（直接改帧像素，走撤销栈）
+    bool GifMosaicCurrentFrame(int x, int y, int w, int h, int mosaicSize);
+    // 删除 [from, to] 区间的帧（至少保留 1 帧），标注随帧一起删
+    bool GifDeleteFrames(int from, int to);
+    void GifClearThumbs() { gifThumbs.clear(); }
+
     int Width() const  { return base ? static_cast<int>(base->GetWidth())  : 0; }
     int Height() const { return base ? static_cast<int>(base->GetHeight()) : 0; }
 
@@ -92,7 +120,7 @@ public:
     // Draw onto graphics in image coordinate space (caller sets transform)
     void DrawAnnotations(Gdiplus::Graphics& g, bool forExport) const;
 
-    bool SaveAs(const std::wstring& path, bool jpg) const;
+    bool SaveAs(const std::wstring& path, bool jpg);
 
     void DeleteSelected();
     bool CopySelectionToClipboard(Gdiplus::Bitmap** outInternal);

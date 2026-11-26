@@ -39,7 +39,14 @@ private:
     void RestoreOwner();      // 显示并前置主窗口（按原来的最大化状态）
     void WorkerLoop(int x, int y, int w, int h, int fps);
     int BarHeight() const;
+    int TitleHeight() const;          // 自绘标题栏高度（不用系统标题栏，避免被裁/主题不一致）
+    RECT ContentHole() const;         // 客户区里的"录制内容"矩形（不含标题栏/底栏/边框）
     void OnPaint();
+    void DrawTitleBar(Gdiplus::Graphics& g, const RECT& rc);
+    int  HitTitleButton(int x, int y) const;   // 0=无 1=最小化 2=最大化/还原 3=关闭
+    RECT TitleButtonRect(int id) const;
+    void OnTitleButton(int id);
+    void ToggleMaximize();
     void DrawBarButton(DRAWITEMSTRUCT* dis, bool primary);
 
     HWND hwnd_ = nullptr;
@@ -57,6 +64,7 @@ private:
     std::atomic<bool> stopFlag_{false};
     std::atomic<bool> paused_{false};
     std::atomic<int> frameCount_{0};
+    std::atomic<int> measuredFps_{0};   // 实测抓帧速率（<=0 表示还没测出来）
     std::mutex mu_;
     gifcodec::Anim anim_;
     RECT region_{};             // 录制区域（屏幕坐标）
@@ -65,6 +73,10 @@ private:
     DWORD pauseStart_ = 0;
     int dpi_ = 96;
     int hot_ = -1;              // 悬停的按钮（0=主按钮 1=次按钮）
+    int titleHot_ = -1;         // 悬停的标题栏按钮（1/2/3）
+    int titlePressed_ = -1;     // 按下的标题栏按钮
+    bool maximized_ = false;
+    RECT restoreRect_{};        // 最大化之前的位置（还原用）
 
     static constexpr int kIdMain = 4301;
     static constexpr int kIdSecond = 4302;

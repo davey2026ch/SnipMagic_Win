@@ -1630,9 +1630,21 @@ void App::OnCommand(int id) {
     case ID_CMD_LONG_CAPTURE: StartLongCapture(); break;
     case ID_CMD_GIF_RECORD: GifRecorder::Instance().Open(hwnd_); break;
     case ID_CMD_MOSAIC: Canvas::Instance().ApplyMosaicToSelection(); break;
-    case ID_CMD_EXTRACT: extract::RunExtractFlow(hwnd_, ActiveDoc()); break;
-    case ID_CMD_EXTRACT_VECTOR: extract::RunExtractVector(hwnd_, ActiveDoc()); break;
-    case ID_CMD_MAGIC_ERASE: extract::RunMagicErase(hwnd_, ActiveDoc()); break;
+    case ID_CMD_EXTRACT:
+    case ID_CMD_EXTRACT_VECTOR:
+    case ID_CMD_MAGIC_ERASE: {
+        Document* d = ActiveDoc();
+        if (d && d->IsGif()) {
+            // 动图里换整帧画面风险太大：引导用户先把这一帧变成普通截图再处理
+            ShowStatusMessage(
+                L"动图页签不支持提取/消除：先点「存为页签」把当前帧变成截图，再对新页签操作");
+            break;
+        }
+        if (id == ID_CMD_EXTRACT) extract::RunExtractFlow(hwnd_, d);
+        else if (id == ID_CMD_EXTRACT_VECTOR) extract::RunExtractVector(hwnd_, d);
+        else extract::RunMagicErase(hwnd_, d);
+        break;
+    }
     case ID_CMD_SETTINGS: OpenSettings(); break;
     case ID_CMD_SAVE_ALL: SaveAllDocs(); break;
     case ID_CMD_UNDO: Canvas::Instance().Undo(); break;
@@ -1852,9 +1864,11 @@ void App::AddGifDocument(std::shared_ptr<gifcodec::Anim> anim) {
     UpdateTitle();
     UpdateStatus();
     InvalidateRect(hwnd_, nullptr, FALSE);
-    ShowStatusMessage(util::Format(L"GIF 录制完成：%d 帧 · %d×%d，可播放/逐帧预览",
-                                   docs_[activeIdx_]->GifFrameCount(),
-                                   docs_[activeIdx_]->Width(), docs_[activeIdx_]->Height()));
+    ShowStatusMessage(util::Format(
+        L"GIF 录制完成：%d 帧 · %d×%d｜可直接用左侧工具在画面上标注，保存 GIF 时自动写入；"
+        L"缩略图右键可删帧",
+        docs_[activeIdx_]->GifFrameCount(),
+        docs_[activeIdx_]->Width(), docs_[activeIdx_]->Height()));
 }
 
 void App::ActivateDoc(int idx) {
@@ -1954,8 +1968,16 @@ bool App::SaveDoc(int idx) {
 
     const bool jpg = !isGif && path.size() > 4 &&
                      _wcsicmp(path.c_str() + path.size() - 4, L".jpg") == 0;
+    // GIF：保存时会把画在帧上的标注一并烙进文件，先记下有多少帧带编辑，好给个明确反馈
+    const int pendingEdits = isGif ? d->GifEditedFrameCount() : 0;
     if (d->SaveAs(path, jpg)) {
-        ShowStatusMessage(L"已保存：" + path);
+        if (pendingEdits > 0) {
+            ShowStatusMessage(util::Format(L"已保存（%d 帧的编辑已写入 GIF）：%s",
+                                           pendingEdits, path.c_str()));
+            Canvas::Instance().Refresh();
+        } else {
+            ShowStatusMessage(L"已保存：" + path);
+        }
         return true;
     }
     MessageBoxW(hwnd_, L"保存失败", APP_NAME, MB_ICONERROR);
@@ -2162,6 +2184,10 @@ void App::UpdateStatus() {
             }
             p3 = util::Format(L"第 %d/%d 帧 · ←/→ 逐帧",
                               d->gifFrame + 1, d->GifFrameCount());
+            const int editedFrames = d->GifEditedFrameCount();
+            if (editedFrames > 0) {
+                p3 += util::Format(L" · %d 帧有编辑待写入", editedFrames);
+            }
             p4 = std::wstring(d->gifPlaying ? L"播放中" : L"已暂停") +
                  (d->gifLoop ? L" · 循环" : L" · 单次");
         } else {

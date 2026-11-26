@@ -15,6 +15,10 @@ bool g_reg = false;
 // 内容区外圈的边框粗细（这一圈会一直盖在桌面上，所以尽量窄）
 const int kBorder = 2;
 
+// 单帧最长停留时间：画面长时间不动时，超过这个值就复制一帧继续累计，
+// 保证 GIF 总时长与真实录制时长一致（旧版卡在 2000ms，长静止画面会变成"快进"）
+const int kMaxFrameDelayMs = 5000;
+
 void EnsureClass(HINSTANCE hi) {
     if (g_reg) return;
     WNDCLASSEXW wc = {};
@@ -37,6 +41,42 @@ void RectToScreen(HWND hwnd, RECT& r) {
     r = { tl.x, tl.y, br.x, br.y };
 }
 
+// 按指定 DPI 把「客户区尺寸」换算成「窗口尺寸」。
+// AdjustWindowRectEx 用的是线程 DPI，在多显示器（不同缩放）下会算错边框/标题栏，
+// 于是窗口会比实际需要小一截（表现就是右上角按钮被裁）。这里优先用 ForDpi 版本。
+void AdjustWindowRectForDpi(RECT& rc, DWORD style, DWORD exStyle, int dpi) {
+    typedef BOOL(WINAPI* Fn)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    static Fn fn = nullptr;
+    static bool inited = false;
+    if (!inited) {
+        inited = true;
+        HMODULE u = GetModuleHandleW(L"user32.dll");
+        if (u) fn = reinterpret_cast<Fn>(GetProcAddress(u, "AdjustWindowRectExForDpi"));
+    }
+    if (fn) fn(&rc, style, FALSE, exStyle, static_cast<UINT>(dpi));
+    else AdjustWindowRectEx(&rc, style, FALSE, exStyle);
+}
+
+// 目标监视器的 DPI（GetDpiForMonitor 是 Win8.1+，取不到就退回窗口 DPI）
+int MonitorDpi(HMONITOR mon, HWND fallback) {
+    if (mon) {
+        typedef HRESULT(WINAPI* Fn)(HMONITOR, int, UINT*, UINT*);
+        static Fn fn = nullptr;
+        static bool inited = false;
+        if (!inited) {
+            inited = true;
+            HMODULE sh = LoadLibraryW(L"shcore.dll");
+            if (sh) fn = reinterpret_cast<Fn>(GetProcAddress(sh, "GetDpiForMonitor"));
+        }
+        if (fn) {
+            UINT dx = 0, dy = 0;
+            if (SUCCEEDED(fn(mon, 0 /*MDT_EFFECTIVE_DPI*/, &dx, &dy)) && dx > 0)
+                return static_cast<int>(dx);
+        }
+    }
+    return util::GetDpiForWindowSafe(fallback);
+}
+
 } // namespace
 
 GifRecorder& GifRecorder::Instance() {
@@ -50,6 +90,44 @@ bool GifRecorder::IsBusy() const {
 
 int GifRecorder::BarHeight() const {
     return util::Scale(46, dpi_);
+}
+
+int GifRecorder::TitleHeight() const {
+    return util::Scale(34, dpi_);
+}
+
+// 客户区里的"录制内容"矩形：上面让出自绘标题栏，下面让出控制条，四周各留边框
+RECT GifRecorder::ContentHole() const {
+    RECT cr = {};
+    if (hwnd_) GetClientRect(hwnd_, &cr);
+    const LONG r = (std::max)(static_cast<LONG>(kBorder + 8), static_cast<LONG>(cr.right - kBorder));
+    const LONG b = (std::max)(static_cast<LONG>(TitleHeight() + kBorder + 8),
+                              static_cast<LONG>(cr.bottom - BarHeight()));
+    RECT hole = { kBorder, TitleHeight() + kBorder, r, b };
+    return hole;
+}
+
+RECT GifRecorder::TitleButtonRect(int id) const {
+    RECT rc = {};
+    if (!hwnd_ || id < 1 || id > 3) return rc;
+    RECT cr;
+    GetClientRect(hwnd_, &cr);
+    const int w = util::Scale(46, dpi_);
+    rc.right = cr.right - w * (3 - id);     // id=3 贴右边缘
+    rc.left = rc.right - w;
+    rc.top = 0;
+    rc.bottom = TitleHeight();
+    return rc;
+}
+
+int GifRecorder::HitTitleButton(int x, int y) const {
+    if (y < 0 || y >= TitleHeight()) return 0;
+    POINT pt = { x, y };
+    for (int id = 1; id <= 3; ++id) {
+        RECT r = TitleButtonRect(id);
+        if (PtInRect(&r, pt)) return id;
+    }
+    return 0;
 }
 
 void GifRecorder::Open(HWND owner) {
@@ -77,7 +155,6 @@ void GifRecorder::Open(HWND owner) {
 void GifRecorder::BuildWindow(HWND owner) {
     HINSTANCE hi = GetModuleHandleW(nullptr);
     EnsureClass(hi);
-    dpi_ = owner ? util::GetDpiForWindowSafe(owner) : 96;
 
     // 默认选区：700×400（逻辑像素，与界面其它尺寸同一套 DPI 缩放），居中。
     // 只做起步大小，打开后仍可拖边框随意放大；屏幕太小则收到工作区的 90%。
@@ -91,6 +168,9 @@ void GifRecorder::BuildWindow(HWND owner) {
     RECT work = mi.rcWork;
     const int workW = static_cast<int>(work.right - work.left);
     const int workH = static_cast<int>(work.bottom - work.top);
+    // DPI 用"录制窗将要落到的那块显示器"的，不能拿主窗口的：
+    // 多显示器缩放比例不同时，拿主窗口的 DPI 算边框会导致窗口偏小（标题栏被裁）。
+    dpi_ = MonitorDpi(mon, owner);
     int rw = util::Scale(700, dpi_);
     int rh = util::Scale(400, dpi_);
     const int maxW = static_cast<int>(workW * 0.9);
@@ -102,24 +182,34 @@ void GifRecorder::BuildWindow(HWND owner) {
                 work.left + ((work.right - work.left) - rw) / 2 + rw,
                 work.top + ((work.bottom - work.top) - rh) / 2 + rh };
 
-    // 标题栏三个按钮都要：最小化 / 最大化 / 关闭。
-    // WS_EX_APPWINDOW：让这个弹出窗在任务栏也有按钮，最小化后还能点回来（否则就"消失"了）。
-    DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX |
-                  WS_THICKFRAME | WS_CLIPCHILDREN;
+    // 不要系统标题栏：标题栏和三个按钮都由我们自己画。
+    // 系统标题栏在"带窗口区域(hollow)"的窗口上会退化成经典样式、且 DPI 不同会被裁，
+    // 自绘就不存在这些问题（按钮永远按我们的 DPI 尺寸画在客户区里）。
+    DWORD style = WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN;
     DWORD exStyle = WS_EX_TOPMOST | WS_EX_APPWINDOW;
 
-    // 先按「选区 + 边框 + 底栏」算出含标题栏的窗口尺寸
+    // 客户区 = 边框 + 标题栏 + 录制内容 + 底栏
     int cw = (region_.right - region_.left) + kBorder * 2;
-    int ch = (region_.bottom - region_.top) + kBorder * 2 + BarHeight();
+    int ch = (region_.bottom - region_.top) + kBorder * 2 + BarHeight() + TitleHeight();
     RECT wr = { 0, 0, cw, ch };
-    AdjustWindowRectEx(&wr, style, FALSE, exStyle);
+    AdjustWindowRectForDpi(wr, style, exStyle, dpi_);
     const int winW = wr.right - wr.left;
     const int winH = wr.bottom - wr.top;
 
-    hwnd_ = CreateWindowExW(exStyle, kRecClass, L"GIF 录制 · 拖动标题栏移动，拖边框调整大小",
-                            style, region_.left, region_.top, winW, winH,
+    hwnd_ = CreateWindowExW(exStyle, kRecClass, L"GIF 录制", style,
+                            region_.left, region_.top, winW, winH,
                             owner, nullptr, hi, nullptr);
     if (!hwnd_) return;
+
+    // 建好后再核对一次真实 DPI：创建前后窗口所属显示器可能不同，不一致就按真实值重算窗口尺寸
+    const int realDpi = util::GetDpiForWindowSafe(hwnd_);
+    if (realDpi > 0 && realDpi != dpi_) {
+        dpi_ = realDpi;
+        RECT need = { 0, 0, cw, ch };
+        AdjustWindowRectForDpi(need, style, exStyle, dpi_);
+        SetWindowPos(hwnd_, nullptr, 0, 0, need.right - need.left, need.bottom - need.top,
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 
     font_ = CreateFontW(-util::Scale(14, dpi_), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                         DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
@@ -128,11 +218,10 @@ void GifRecorder::BuildWindow(HWND owner) {
     const int btnH = util::Scale(32, dpi_);
     const int gap = util::Scale(8, dpi_);
     const int padR = util::Scale(12, dpi_);
-    int cwNow = cw, chNow = ch;
     RECT cr;
     GetClientRect(hwnd_, &cr);
-    cwNow = cr.right;
-    chNow = cr.bottom;
+    const int cwNow = cr.right;
+    const int chNow = cr.bottom;
 
     btnSecond_ = CreateWindowW(L"BUTTON", L"取消",
                                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
@@ -156,17 +245,28 @@ void GifRecorder::BuildWindow(HWND owner) {
     }
 
     ApplyGeometry();
-    // 让「选区」正好落在计划的位置
-    RECT cr2;
-    GetClientRect(hwnd_, &cr2);
-    RECT hole = { kBorder, kBorder, cr2.right - kBorder, cr2.bottom - BarHeight() };
-    RectToScreen(hwnd_, hole);
-    int dx = region_.left - hole.left;
-    int dy = region_.top - hole.top;
-    RECT wrNow;
-    GetWindowRect(hwnd_, &wrNow);
-    SetWindowPos(hwnd_, HWND_TOPMOST, wrNow.left + dx, wrNow.top + dy, 0, 0,
-                 SWP_NOSIZE | SWP_SHOWWINDOW);
+    // 让「录制内容」正好落在计划的位置，并整体夹进工作区（标题栏/按钮不能跑到屏幕外）
+    {
+        RECT cr2;
+        GetClientRect(hwnd_, &cr2);
+        RECT hole = ContentHole();
+        RectToScreen(hwnd_, hole);
+        RECT wrNow;
+        GetWindowRect(hwnd_, &wrNow);
+        int nx = wrNow.left + (region_.left - hole.left);
+        int ny = wrNow.top + (region_.top - hole.top);
+        const int ww = wrNow.right - wrNow.left;
+        const int wh = wrNow.bottom - wrNow.top;
+        RECT wk = work;
+        HMONITOR m2 = MonitorFromRect(&wrNow, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi2 = { sizeof(mi2) };
+        if (m2 && GetMonitorInfoW(m2, &mi2)) wk = mi2.rcWork;
+        if (nx + ww > wk.right) nx = wk.right - ww;
+        if (ny + wh > wk.bottom) ny = wk.bottom - wh;
+        if (nx < wk.left) nx = wk.left;
+        if (ny < wk.top) ny = wk.top;
+        SetWindowPos(hwnd_, HWND_TOPMOST, nx, ny, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
+    }
 
     state_ = State::Idle;
     UpdateButtons();
@@ -181,10 +281,8 @@ void GifRecorder::ApplyGeometry() {
     RECT cr;
     GetClientRect(hwnd_, &cr);
     if (cr.right <= 0 || cr.bottom <= 0) return;
-    RECT wr;
-    GetWindowRect(hwnd_, &wr);
 
-    RECT hole = { kBorder, kBorder, cr.right - kBorder, cr.bottom - BarHeight() };
+    RECT hole = ContentHole();
     if (hole.right - hole.left < 32 || hole.bottom - hole.top < 32) return;
 
     // 记下真实录制区域（屏幕坐标）
@@ -193,6 +291,8 @@ void GifRecorder::ApplyGeometry() {
     region_ = holeScreen;
 
     // 窗口区域 = 整窗 - 内容区（内容区留空，直接透出桌面）
+    RECT wr;
+    GetWindowRect(hwnd_, &wr);
     POINT org = { 0, 0 };
     ClientToScreen(hwnd_, &org);
     RECT holeWin = { org.x - wr.left + hole.left, org.y - wr.top + hole.top,
@@ -271,15 +371,20 @@ void GifRecorder::UpdateStatusText() {
         txt = util::Format(L"%s %02u:%02u · %d 帧 · %d fps",
                            state_ == State::Paused ? L"已暂停" : L"录制中",
                            sec / 60, sec % 60, frames, Settings().gifFps);
+        // 抓帧跟不上设定帧率时把实测值也显示出来（大区域 + 高帧率很容易达不到）
+        const int target = (std::max)(1, Settings().gifFps);
+        const int measured = measuredFps_.load();
+        if (measured > 0 && state_ == State::Recording &&
+            (measured * 10 < target * 9 || measured * 10 > target * 11)) {
+            txt += util::Format(L"（实测 %d）", measured);
+        }
     }
     SetWindowTextW(status_, txt.c_str());
 }
 
 void GifRecorder::StartRecording() {
     if (!hwnd_ || state_ != State::Idle) return;
-    RECT cr;
-    GetClientRect(hwnd_, &cr);
-    RECT hole = { kBorder, kBorder, cr.right - kBorder, cr.bottom - BarHeight() };
+    RECT hole = ContentHole();
     RectToScreen(hwnd_, hole);
 
     const int w = hole.right - hole.left;
@@ -301,6 +406,7 @@ void GifRecorder::StartRecording() {
         anim_.loop = true;
     }
     frameCount_.store(0);
+    measuredFps_.store(0);
     stopFlag_.store(false);
     bool paused = false;
     (void)paused;
@@ -379,6 +485,7 @@ void GifRecorder::Cancel() {
         anim_ = gifcodec::Anim();
     }
     frameCount_.store(0);
+    measuredFps_.store(0);
     CloseAll();
 }
 
@@ -448,6 +555,8 @@ void GifRecorder::WorkerLoop(int x, int y, int w, int h, int fps) {
             const int interval = (std::max)(10, 1000 / (fps > 0 ? fps : 24));
             ULONGLONG lastTick = GetTickCount64();
             bool first = true;
+            const ULONGLONG statStart = lastTick;
+            int statCount = 0;
 
             while (!stopFlag_.load()) {
                 if (paused_.load()) {
@@ -458,6 +567,11 @@ void GifRecorder::WorkerLoop(int x, int y, int w, int h, int fps) {
                 }
                 const ULONGLONG t0 = GetTickCount64();
                 BitBlt(mem, 0, 0, w, h, screen, x, y, SRCCOPY);
+                // 鼠标箭头：BitBlt 抓不到光标，按设置补画（GIF 默认画，便于引导视线）
+                if (Settings().captureCursorGif) {
+                    POINT org = { x, y };
+                    util::DrawCursorOnDC(mem, org);
+                }
                 GdiFlush();
                 memcpy(buf.data(), bits, buf.size());
 
@@ -468,12 +582,22 @@ void GifRecorder::WorkerLoop(int x, int y, int w, int h, int fps) {
                 gifcodec::Frame f;
                 if (gifcodec::CompressFrame(buf.data(), w, h, delay, f)) {
                     std::lock_guard<std::mutex> lk(mu_);
-                    // 画面没变就并到上一帧的停留时间里，避免 GIF 白白变大
+                    // 画面没变就并到上一帧的停留时间里，避免 GIF 白白变大。
+                    // 单帧不要积太久（很多播放器对超长延迟处理不一致），
+                    // 超过 kMaxFrameDelayMs 就复制一帧接着累计——总时长才不会缩水。
                     if (!anim_.frames.empty() &&
                         anim_.frames.back().data.size() == f.data.size() &&
                         memcmp(anim_.frames.back().data.data(), f.data.data(), f.data.size()) == 0) {
-                        int d = anim_.frames.back().delayMs + delay;
-                        anim_.frames.back().delayMs = (std::min)(2000, d);
+                        int total = anim_.frames.back().delayMs + delay;
+                        while (total > kMaxFrameDelayMs) {
+                            anim_.frames.back().delayMs = kMaxFrameDelayMs;
+                            gifcodec::Frame dup = anim_.frames.back();  // 压缩数据相同，直接复制
+                            dup.delayMs = 0;
+                            anim_.frames.push_back(std::move(dup));
+                            frameCount_.store(static_cast<int>(anim_.frames.size()));
+                            total -= kMaxFrameDelayMs;
+                        }
+                        anim_.frames.back().delayMs = total;
                     } else {
                         anim_.frames.push_back(std::move(f));
                         frameCount_.store(static_cast<int>(anim_.frames.size()));
@@ -481,6 +605,15 @@ void GifRecorder::WorkerLoop(int x, int y, int w, int h, int fps) {
                 }
                 lastTick = t0;
                 first = false;
+
+                // 实测抓帧速率（用于状态栏显示；达不到设定值时要让用户看见）
+                if (++statCount >= 8) {
+                    const ULONGLONG el = GetTickCount64() - statStart;
+                    if (el > 0) {
+                        int mf = static_cast<int>((statCount * 1000 + el / 2) / el);
+                        measuredFps_.store(mf);
+                    }
+                }
 
                 const int spent = static_cast<int>(GetTickCount64() - t0);
                 const int wait = interval - spent;
@@ -495,6 +628,120 @@ void GifRecorder::WorkerLoop(int x, int y, int w, int h, int fps) {
     timeEndPeriod(1);
 }
 
+void GifRecorder::DrawTitleBar(Graphics& g, const RECT& rc) {
+    auto& s = Settings();
+    const bool dark = s.IsDarkTheme();
+    const int titleH = TitleHeight();
+    const int w = rc.right;
+
+    // 标题栏底色（比内容面板略深一点，和下方控制条区分开）
+    SolidBrush bg(ToGpColor(dark ? RGB(52, 52, 52) : RGB(240, 240, 240)));
+    g.FillRectangle(&bg, 0, 0, w, titleH);
+    Pen line(ToGpColor(s.BorderColor()), 1);
+    g.DrawLine(&line, 0, titleH - 1, w, titleH - 1);
+
+    // 左侧标题文字（按钮区之前，超出就裁掉）
+    const int btnW = util::Scale(46, dpi_);
+    const int textRight = w - btnW * 3 - util::Scale(8, dpi_);
+    FontFamily fam(L"Microsoft YaHei");
+    Font f(&fam, static_cast<REAL>(util::Scale(13, dpi_)), FontStyleRegular, UnitPixel);
+    SolidBrush fg(ToGpColor(s.TextColor()));
+    StringFormat fmt;
+    fmt.SetAlignment(StringAlignmentNear);
+    fmt.SetLineAlignment(StringAlignmentCenter);
+    fmt.SetTrimming(StringTrimmingEllipsisCharacter);
+    RectF layout(static_cast<REAL>(util::Scale(12, dpi_)), 0,
+                 static_cast<REAL>((std::max)(0, textRight)),
+                 static_cast<REAL>(titleH));
+    g.DrawString(IsBusy() ? L"GIF 录制中 · 拖边框可调整大小"
+                          : L"GIF 录制 · 拖动标题栏移动，拖边框调整大小",
+                 -1, &f, layout, &fmt, &fg);
+
+    // 右侧三个按钮：最小化 / 最大化(还原) / 关闭
+    const Color glyph = ToGpColor(s.TextColor());
+    const REAL gs = static_cast<REAL>(util::Scale(9, dpi_));
+    for (int id = 1; id <= 3; ++id) {
+        RECT br = TitleButtonRect(id);
+        const REAL bw = static_cast<REAL>(br.right - br.left);
+        const REAL bh = static_cast<REAL>(br.bottom - br.top);
+        const bool hot = (titleHot_ == id);
+        const bool pressed = (titlePressed_ == id && hot);
+        if (hot) {
+            COLORREF hb = (id == 3) ? RGB(216, 48, 48)
+                                    : (dark ? RGB(78, 78, 78) : RGB(224, 224, 224));
+            SolidBrush hbr(ToGpColor(hb));
+            g.FillRectangle(&hbr, static_cast<REAL>(br.left), 0.0f, bw, bh);
+        }
+        if (pressed) {
+            SolidBrush pbr(Color(40, 0, 0, 0));
+            g.FillRectangle(&pbr, static_cast<REAL>(br.left), 0.0f, bw, bh);
+        }
+        const Color col = (hot && id == 3) ? Color(255, 255, 255, 255) : glyph;
+        Pen pen(col, static_cast<REAL>(dpi_) * 1.4f / 96.0f);
+        const REAL cx = br.left + bw / 2;
+        const REAL cy = bh / 2;
+        if (id == 1) {
+            g.DrawLine(&pen, cx - gs / 2, cy, cx + gs / 2, cy);
+        } else if (id == 2) {
+            if (maximized_) {
+                // 还原：两个错开的小方框
+                g.DrawRectangle(&pen, cx - gs / 2 + 1, cy - gs / 2, gs - 2, gs - 2);
+                g.DrawRectangle(&pen, cx - gs / 2, cy - gs / 2 + 1, gs - 2, gs - 2);
+            } else {
+                g.DrawRectangle(&pen, cx - gs / 2, cy - gs / 2, gs, gs);
+            }
+        } else {
+            g.DrawLine(&pen, cx - gs / 2, cy - gs / 2, cx + gs / 2, cy + gs / 2);
+            g.DrawLine(&pen, cx + gs / 2, cy - gs / 2, cx - gs / 2, cy + gs / 2);
+        }
+    }
+}
+
+void GifRecorder::OnTitleButton(int id) {
+    if (!hwnd_) return;
+    switch (id) {
+    case 1:
+        ShowWindow(hwnd_, SW_MINIMIZE);
+        break;
+    case 2:
+        ToggleMaximize();
+        break;
+    case 3:
+        Cancel();
+        break;
+    default:
+        break;
+    }
+}
+
+void GifRecorder::ToggleMaximize() {
+    if (!hwnd_) return;
+    if (!maximized_) {
+        RECT wr;
+        GetWindowRect(hwnd_, &wr);
+        HMONITOR mon = MonitorFromRect(&wr, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = { sizeof(mi) };
+        if (mon && GetMonitorInfoW(mon, &mi)) {
+            restoreRect_ = wr;
+            maximized_ = true;
+            SetWindowPos(hwnd_, HWND_TOPMOST, mi.rcWork.left, mi.rcWork.top,
+                         mi.rcWork.right - mi.rcWork.left, mi.rcWork.bottom - mi.rcWork.top,
+                         SWP_NOACTIVATE);
+            ApplyGeometry();
+            InvalidateRect(hwnd_, nullptr, TRUE);
+        }
+    } else {
+        maximized_ = false;
+        if (restoreRect_.right > restoreRect_.left) {
+            SetWindowPos(hwnd_, HWND_TOPMOST, restoreRect_.left, restoreRect_.top,
+                         restoreRect_.right - restoreRect_.left,
+                         restoreRect_.bottom - restoreRect_.top, SWP_NOACTIVATE);
+        }
+        ApplyGeometry();
+        InvalidateRect(hwnd_, nullptr, TRUE);
+    }
+}
+
 void GifRecorder::OnPaint() {
     PAINTSTRUCT ps;
     HDC hdc = BeginPaint(hwnd_, &ps);
@@ -506,17 +753,22 @@ void GifRecorder::OnPaint() {
     auto& s = Settings();
     const COLORREF panel = s.PanelColor();
     const int barH = BarHeight();
+    const int titleH = TitleHeight();
 
-    // 外圈提示色：录制中红色，待录制/暂停主题色
+    // 自绘标题栏
+    DrawTitleBar(g, rc);
+
+    // 外圈提示色：录制中红色，待录制/暂停主题色（标题栏以下、底栏以上那一段）
     COLORREF edge = s.themeColor;
     if (state_ == State::Recording) edge = RGB(216, 48, 48);
     else if (state_ == State::Paused) edge = RGB(224, 150, 32);
 
     SolidBrush edgeBr(ToGpColor(edge));
-    g.FillRectangle(&edgeBr, 0, 0, rc.right, kBorder);                       // 上
-    g.FillRectangle(&edgeBr, 0, rc.bottom - barH - kBorder, rc.right, kBorder); // 下（贴着录区底部）
-    g.FillRectangle(&edgeBr, 0, 0, kBorder, rc.bottom - barH);               // 左
-    g.FillRectangle(&edgeBr, rc.right - kBorder, 0, kBorder, rc.bottom - barH); // 右
+    g.FillRectangle(&edgeBr, 0, titleH, rc.right, kBorder);                       // 上
+    g.FillRectangle(&edgeBr, 0, rc.bottom - barH - kBorder, rc.right, kBorder);   // 下（贴着录区底部）
+    g.FillRectangle(&edgeBr, 0, titleH, kBorder, rc.bottom - barH - titleH);      // 左
+    g.FillRectangle(&edgeBr, rc.right - kBorder, titleH, kBorder,
+                    rc.bottom - barH - titleH);                                   // 右
 
     // 底部控制条
     SolidBrush panelBr(ToGpColor(panel));
@@ -614,17 +866,70 @@ LRESULT CALLBACK GifRecorder::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         if (self.hwnd_ == hwnd) self.OnPaint();
         return 0;
     case WM_NCHITTEST: {
+        // 没有系统标题栏：边框/四角交给系统做缩放；自绘标题栏返回 HTCAPTION 就能拖动
+        if (self.state_ != State::Idle) return HTNOWHERE;   // 录制中锁定位置/大小
         LRESULT r = DefWindowProcW(hwnd, msg, wParam, lParam);
-        if (self.state_ != State::Idle && r != HTCLIENT) return HTNOWHERE; // 录制中锁定位置/大小
-        return r;
+        if (r != HTCLIENT) return r;
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ScreenToClient(hwnd, &pt);
+        if (pt.y < self.TitleHeight())
+            return self.HitTitleButton(pt.x, pt.y) ? HTCLIENT : HTCAPTION;
+        return HTCLIENT;
+    }
+    case WM_NCLBUTTONDBLCLK:
+        if (wParam == HTCAPTION) {
+            self.ToggleMaximize();      // 双击标题栏 = 最大化/还原
+            return 0;
+        }
+        break;
+    case WM_MOUSEMOVE: {
+        int id = self.HitTitleButton(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        if (id != self.titleHot_) {
+            self.titleHot_ = id;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        if (!self.titleHot_ && !self.titlePressed_) {
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
+            TrackMouseEvent(&tme);
+        }
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        if (self.titleHot_ != -1) {
+            self.titleHot_ = -1;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return 0;
+    case WM_LBUTTONDOWN: {
+        int id = self.HitTitleButton(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        if (id) {
+            self.titlePressed_ = id;
+            SetCapture(hwnd);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        if (self.titlePressed_) {
+            const int pressed = self.titlePressed_;
+            self.titlePressed_ = -1;
+            ReleaseCapture();
+            int id = self.HitTitleButton(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+            InvalidateRect(hwnd, nullptr, FALSE);
+            if (id == pressed) self.OnTitleButton(pressed);   // 在按钮上松开才算点中
+            return 0;
+        }
+        return 0;
     }
     case WM_GETMINMAXINFO: {
-        // 下限：保证底部控制条（两个按钮 + 状态文字）永远放得下
+        // 下限：保证标题栏 + 底部控制条（两个按钮 + 状态文字）永远放得下
         auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
-        RECT need = { 0, 0, util::Scale(430, self.dpi_), util::Scale(210, self.dpi_) };
+        RECT need = { 0, 0, util::Scale(430, self.dpi_),
+                      util::Scale(210, self.dpi_) + self.TitleHeight() };
         DWORD st = static_cast<DWORD>(GetWindowLongW(hwnd, GWL_STYLE));
         DWORD ex = static_cast<DWORD>(GetWindowLongW(hwnd, GWL_EXSTYLE));
-        AdjustWindowRectEx(&need, st, FALSE, ex);
+        AdjustWindowRectForDpi(need, st, ex, self.dpi_);
         mmi->ptMinTrackSize.x = need.right - need.left;
         mmi->ptMinTrackSize.y = need.bottom - need.top;
         return 0;
@@ -660,10 +965,46 @@ LRESULT CALLBACK GifRecorder::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         if (wParam == static_cast<WPARAM>(kTimerStatus)) self.UpdateStatusText();
         return 0;
     case WM_DPICHANGED:
-        // 拖到另一块不同缩放比例的显示器：重新按新 DPI 排布（客户区/录区随之更新）
+        // 拖到另一块不同缩放比例的显示器：按新 DPI 重算窗口尺寸（否则边框/标题栏会被裁），
+        // 录制内容等比缩放，子控件重排
         if (self.hwnd_ == hwnd) {
-            self.dpi_ = HIWORD(wParam);
+            RECT oldHole = self.ContentHole();
+            const int holeW = oldHole.right - oldHole.left;
+            const int holeH = oldHole.bottom - oldHole.top;
+            const int oldDpi = (self.dpi_ > 0) ? self.dpi_ : 96;
+            const int newDpi = static_cast<int>(HIWORD(wParam));
+            self.dpi_ = (newDpi > 0) ? newDpi : oldDpi;
+            const int nw = MulDiv(holeW, self.dpi_, oldDpi);
+            const int nh = MulDiv(holeH, self.dpi_, oldDpi);
+            RECT need = { 0, 0, nw + kBorder * 2,
+                          nh + kBorder * 2 + self.BarHeight() + self.TitleHeight() };
+            DWORD st = static_cast<DWORD>(GetWindowLongW(hwnd, GWL_STYLE));
+            DWORD ex = static_cast<DWORD>(GetWindowLongW(hwnd, GWL_EXSTYLE));
+            AdjustWindowRectForDpi(need, st, ex, self.dpi_);
+            const RECT* sug = reinterpret_cast<const RECT*>(lParam);
+            SetWindowPos(hwnd, nullptr, sug->left, sug->top,
+                         need.right - need.left, need.bottom - need.top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            // 字体也按新 DPI 重建
+            if (self.font_) {
+                DeleteObject(self.font_);
+                self.font_ = CreateFontW(-util::Scale(14, self.dpi_), 0, 0, 0, FW_NORMAL,
+                                         FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0,
+                                         CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
+                if (self.font_) {
+                    if (self.status_)
+                        SendMessageW(self.status_, WM_SETFONT,
+                                     reinterpret_cast<WPARAM>(self.font_), TRUE);
+                    if (self.btnMain_)
+                        SendMessageW(self.btnMain_, WM_SETFONT,
+                                     reinterpret_cast<WPARAM>(self.font_), TRUE);
+                    if (self.btnSecond_)
+                        SendMessageW(self.btnSecond_, WM_SETFONT,
+                                     reinterpret_cast<WPARAM>(self.font_), TRUE);
+                }
+            }
             self.ApplyGeometry();
+            InvalidateRect(hwnd, nullptr, TRUE);
         }
         return 0;
     case WM_DRAWITEM: {

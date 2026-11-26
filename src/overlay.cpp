@@ -233,12 +233,16 @@ void CaptureOverlay::Start(HWND owner, CaptureMode mode) {
     // 无论按钮还是快捷键：同一套强制隐藏，确认不可见后再截
     ForceHideForCapture(owner);
 
-    // Capture screen without cursor
+    // 抓屏（BitBlt 不含光标）。设置里勾了「录制鼠标箭头 - 截图」才补画上去
     HDC hdcScreen = GetDC(nullptr);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
     HBITMAP hbm = CreateCompatibleBitmap(hdcScreen, w, h);
     HGDIOBJ old = SelectObject(hdcMem, hbm);
     BitBlt(hdcMem, 0, 0, w, h, hdcScreen, x, y, SRCCOPY);
+    if (Settings().captureCursorShot) {
+        POINT org = { x, y };
+        util::DrawCursorOnDC(hdcMem, org);
+    }
     SelectObject(hdcMem, old);
     DeleteDC(hdcMem);
     ReleaseDC(nullptr, hdcScreen);

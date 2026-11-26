@@ -40,6 +40,11 @@ struct AppSettings {
     // 程序内粘贴（当前画布/其他页签）始终不加边框。默认开启。
     bool borderCopyToExternal = true;
 
+    // 抓屏时是否把鼠标箭头画进画面（BitBlt 本身抓不到光标，要自己补画）。
+    // 普通截图默认不画（画面干净）；GIF 录制默认画（让观众看清操作位置）。
+    bool captureCursorShot = false;   // 「截图」：区域截图
+    bool captureCursorGif  = true;    // 「GIF录制」
+
     // 取色器「最近使用」颜色（最新在前，最多 kRecentColorMax 个；持久化到 ini）
     // 宫格 8 列 × 3 行 = 24 格，其中前 3 格是固定色（红/黑/白，不可替换），
     // 因此「最近使用」最多记 21 个

@@ -80,6 +80,8 @@ private:
     LRESULT Handle(HWND, UINT, WPARAM, LPARAM);
 
     void OnPaint();
+    // 框选虚线 + 四角刻度（普通画布与 GIF 预览共用，坐标是图像像素）
+    void DrawRegionOverlay(Gdiplus::Graphics& g, float z) const;
     void OnMouseDown(int x, int y, bool right);
     void OnMouseMove(int x, int y);
     void OnMouseUp(int x, int y);
@@ -173,7 +175,7 @@ private:
                        bool primary, bool glyph);
     void GifMouseDown(int x, int y);
     void GifMouseMove(int x, int y);
-    void GifMouseUp();
+    void GifMouseUp(int x, int y);
     void GifWheel(int delta, int x, int y);
     void OnGifTimer();
     void UpdateGifTimer();
@@ -189,13 +191,25 @@ private:
     int GifMaxScroll() const;
     void GifEnsureVisible();
 
+    // ---- GIF 预览区当普通截图来编辑 ----
+    // 当前帧在客户区的目标矩形（预览绘制与坐标换算共用同一套数字）
+    bool GifPreviewRect(Gdiplus::RectF& dst) const;
+    // 这个位置按下是否应该进入标注编辑（而不是平移/框选）
+    bool GifWantsAnnotationEdit(int x, int y);
+    void GifRightClick(int x, int y);              // 缩略图右键：删帧菜单
+    void AfterGifEdit();                           // 标注变了：缩略图 + 状态栏 + 刷新
+    void AfterGifFramesChanged();                  // 帧增删：清缓存、夹滚动、停播放
+
     int gifCacheIdx_ = -1;
+    int gifCacheRev_ = -1;   // 帧数据版本（Document::gifRev），变了就丢缓存
     std::unique_ptr<Gdiplus::Bitmap> gifCache_;
     bool gifTimerOn_ = false;
     // 交互态
     bool gifDragThumb_ = false;
     bool gifPanDrag_ = false;      // 正在拖动预览画面
     bool gifPanMoved_ = false;     // 本次按下是否真的拖动了（决定松开时是否算点击）
+    bool gifMidPan_ = false;       // 中键拖动平移（有绘图工具时也能平移）
+    bool gifEditing_ = false;      // 本次按下是在编辑标注（鼠标移动/松开都交给画布逻辑）
     int  gifPanLastX_ = 0;
     int  gifPanLastY_ = 0;
     int gifDragOffset_ = 0;

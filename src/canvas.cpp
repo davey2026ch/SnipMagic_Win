@@ -185,8 +185,31 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_RBUTTONDOWN:
+        if (IsGifDoc()) {
+            SetFocus(hwnd);
+            GifRightClick(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+            return 0;
+        }
         OnMouseDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), true);
         return 0;
+    case WM_MBUTTONDOWN:
+        // GIF 页：中键拖动平移（选了绘图工具也还能挪画面）
+        if (IsGifDoc()) {
+            SetFocus(hwnd);
+            SetCapture(hwnd);
+            gifMidPan_ = true;
+            gifPanLastX_ = GET_X_LPARAM(lParam);
+            gifPanLastY_ = GET_Y_LPARAM(lParam);
+            return 0;
+        }
+        break;
+    case WM_MBUTTONUP:
+        if (IsGifDoc()) {
+            ReleaseCapture();
+            gifMidPan_ = false;
+            return 0;
+        }
+        break;
     case WM_MOUSEMOVE:
         if (IsGifDoc()) {
             GifMouseMove(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
@@ -206,7 +229,7 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_LBUTTONUP:
         if (IsGifDoc()) {
             ReleaseCapture();
-            GifMouseUp();
+            GifMouseUp(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
             return 0;
         }
         if (scrollui::Up(vsb_, hsb_)) {
@@ -217,7 +240,11 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         OnMouseUp(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
     case WM_LBUTTONDBLCLK:
-        if (IsGifDoc()) return 0;
+        if (IsGifDoc()) {
+            // 动图页：双击文字标注同样进入编辑（双击空白处什么都不做）
+            OnDoubleClick(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+            return 0;
+        }
         OnDoubleClick(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
     case WM_MOUSEWHEEL:
@@ -287,7 +314,9 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_SETCURSOR: {
         if (LOWORD(lParam) != HTCLIENT) break;
         if (IsGifDoc()) {
-            SetCursor(LoadCursor(nullptr, IDC_ARROW));
+            // 动图页也能标注：选中绘图工具时光标变十字，提示"这里可以画"
+            const bool drawing = (tool_ != Tool::Select && tool_ != Tool::View);
+            SetCursor(LoadCursor(nullptr, drawing ? IDC_CROSS : IDC_ARROW));
             return TRUE;
         }
         POINT pt;
@@ -363,8 +392,7 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-void Canvas::EnsureBackbuffer(int w, int h) {
-    if (w <= 0 || h <= 0) return;
+void Canvas::EnsureBackbuffer(int w, int h) {    if (w <= 0 || h <= 0) return;
     if (memDc_ && memW_ == w && memH_ == h) return;
     if (memDc_) {
         SelectObject(memDc_, nullptr);
@@ -470,6 +498,18 @@ void Canvas::UpdateScrollBars() {
 }
 
 void Canvas::ClientToImage(int cx, int cy, float& ix, float& iy) const {
+    // GIF 页签：预览画面按「适应可视区 × gifZoom」显示，坐标换到帧像素
+    if (doc_ && doc_->IsGif()) {
+        Gdiplus::RectF dst;
+        if (GifPreviewRect(dst) && dst.Width > 0.5f && dst.Height > 0.5f) {
+            const float z = dst.Width / static_cast<float>(doc_->gif->width);
+            ix = (static_cast<float>(cx) - dst.X) / z;
+            iy = (static_cast<float>(cy) - dst.Y) / z;
+            return;
+        }
+        ix = iy = 0.0f;
+        return;
+    }
     float z = doc_ ? doc_->zoom : 1.0f;
     int m = Margin();
     ix = (cx + (doc_ ? doc_->scrollX : 0) - m) / z;
@@ -477,6 +517,17 @@ void Canvas::ClientToImage(int cx, int cy, float& ix, float& iy) const {
 }
 
 void Canvas::ImageToClient(float ix, float iy, int& cx, int& cy) const {
+    if (doc_ && doc_->IsGif()) {
+        Gdiplus::RectF dst;
+        if (GifPreviewRect(dst) && doc_->gif->width > 0) {
+            const float z = dst.Width / static_cast<float>(doc_->gif->width);
+            cx = static_cast<int>(dst.X + ix * z);
+            cy = static_cast<int>(dst.Y + iy * z);
+            return;
+        }
+        cx = cy = 0;
+        return;
+    }
     float z = doc_ ? doc_->zoom : 1.0f;
     int m = Margin();
     cx = static_cast<int>(ix * z + m - (doc_ ? doc_->scrollX : 0));
@@ -485,6 +536,38 @@ void Canvas::ImageToClient(float ix, float iy, int& cx, int& cy) const {
 
 bool Canvas::IsEditMode() const {
     return tool_ != Tool::View && doc_ != nullptr;
+}
+
+// 框选虚线框 + 四角刻度；坐标是图像像素，调用方已把变换设成「图像 → 屏幕」
+void Canvas::DrawRegionOverlay(Graphics& g, float z) const {
+    if (!doc_ || tool_ == Tool::View) return;
+    if (dragMode_ != DragMode::Rubber && !doc_->hasRegion) return;
+    const float safeZ = (std::max)(0.01f, z);
+    float l, t, r, b;
+    if (dragMode_ == DragMode::Rubber) {
+        l = (std::min)(startIx_, lastIx_);
+        t = (std::min)(startIy_, lastIy_);
+        r = (std::max)(startIx_, lastIx_);
+        b = (std::max)(startIy_, lastIy_);
+    } else {
+        l = doc_->regionL; t = doc_->regionT;
+        r = doc_->regionR; b = doc_->regionB;
+    }
+    if (r - l < 0.5f && b - t < 0.5f) return;
+    RectF region(l, t, r - l, b - t);
+    Pen pen(Color(220, 0, 120, 215), 1.5f / safeZ);
+    pen.SetDashStyle(DashStyleDash);
+    g.DrawRectangle(&pen, region);
+    const float tick = 6.0f / safeZ;
+    Pen tickPen(Color(255, 0, 120, 215), 2.0f / safeZ);
+    g.DrawLine(&tickPen, l, t, l + tick, t);
+    g.DrawLine(&tickPen, l, t, l, t + tick);
+    g.DrawLine(&tickPen, r, t, r - tick, t);
+    g.DrawLine(&tickPen, r, t, r, t + tick);
+    g.DrawLine(&tickPen, l, b, l + tick, b);
+    g.DrawLine(&tickPen, l, b, l, b - tick);
+    g.DrawLine(&tickPen, r, b, r - tick, b);
+    g.DrawLine(&tickPen, r, b, r, b - tick);
 }
 
 void Canvas::OnPaint() {
@@ -551,34 +634,7 @@ void Canvas::OnPaint() {
     doc_->DrawAnnotations(g, false);
 
     // rubber-band or stored region（查看模式不绘制）
-    if (tool_ != Tool::View &&
-        (dragMode_ == DragMode::Rubber || (doc_ && doc_->hasRegion))) {
-        float l, t, r, b;
-        if (dragMode_ == DragMode::Rubber) {
-            l = (std::min)(startIx_, lastIx_);
-            t = (std::min)(startIy_, lastIy_);
-            r = (std::max)(startIx_, lastIx_);
-            b = (std::max)(startIy_, lastIy_);
-        } else {
-            l = doc_->regionL; t = doc_->regionT;
-            r = doc_->regionR; b = doc_->regionB;
-        }
-        RectF region(l, t, r - l, b - t);
-        Pen pen(Color(220, 0, 120, 215), 1.5f / (std::max)(0.01f, z));
-        pen.SetDashStyle(DashStyleDash);
-        g.DrawRectangle(&pen, region);
-        // corner ticks
-        float tick = 6.0f / z;
-        Pen tickPen(Color(255, 0, 120, 215), 2.0f / z);
-        g.DrawLine(&tickPen, l, t, l + tick, t);
-        g.DrawLine(&tickPen, l, t, l, t + tick);
-        g.DrawLine(&tickPen, r, t, r - tick, t);
-        g.DrawLine(&tickPen, r, t, r, t + tick);
-        g.DrawLine(&tickPen, l, b, l + tick, b);
-        g.DrawLine(&tickPen, l, b, l, b - tick);
-        g.DrawLine(&tickPen, r, b, r - tick, b);
-        g.DrawLine(&tickPen, r, b, r, b - tick);
-    }
+    if (tool_ != Tool::View) DrawRegionOverlay(g, z);
     g.Restore(st);
 
     // size tip near rubber band
@@ -615,9 +671,18 @@ void Canvas::SetDocument(Document* doc) {
     gifDragThumb_ = false;
     gifPressed_ = 0;
     gifHover_ = 0;
+    gifEditing_ = false;
+    gifMidPan_ = false;
+    gifPanDrag_ = false;
+    draft_.reset();
+    dragMode_ = DragMode::None;
     if (doc_ && doc_->IsGif()) {
+        gifCacheRev_ = doc_->gifRev;
         doc_->gifNextTick = 0;
         if (doc_->gifFrame < 0 || doc_->gifFrame >= doc_->GifFrameCount()) doc_->gifFrame = 0;
+        doc_->GifEnsureAnnSlots();
+    } else {
+        gifCacheRev_ = -1;
     }
     UpdateGifTimer();
     Refresh();
@@ -777,7 +842,8 @@ void Canvas::OnMouseDown(int x, int y, bool right) {
 
         // 框选区内空白处按下：把选区画面“抠起”——原位置直接烙白进底图，
         // 抠出的内容变成可拖动的图片图层（移花接木同款交互）
-        if (tool_ == Tool::Select && doc_->hasRegion) {
+        // 动图页签不支持：那里的画面来自解码帧，抠起的"白底"不会反映到 GIF 上
+        if (tool_ == Tool::Select && doc_->hasRegion && !doc_->IsGif()) {
             int rx = 0, ry = 0, rw = 0, rh = 0;
             if (doc_->GetRegion(rx, ry, rw, rh) &&
                 util::PtInRectF(RectF(static_cast<float>(rx), static_cast<float>(ry),
@@ -1274,6 +1340,38 @@ void Canvas::PasteFromBuffer() {
 
 void Canvas::ApplyMosaicToSelection() {
     if (!doc_) return;
+    // 动图页签：马赛克直接打在"当前帧"的像素上（其余帧不受影响）
+    if (doc_->IsGif()) {
+        if (doc_->gifFrame < 0 || doc_->gifFrame >= doc_->GifFrameCount()) return;
+        int x = 0, y = 0, w = 0, h = 0;
+        if (!doc_->GetRegion(x, y, w, h)) {
+            Annotation* sel = doc_->GetSelected();
+            if (!sel) {
+                App::Instance().ShowStatusMessage(L"请先用「选择」在画面上框选要打码的区域");
+                return;
+            }
+            RectF b;
+            sel->GetBounds(b);
+            x = static_cast<int>(std::floor(b.X));
+            y = static_cast<int>(std::floor(b.Y));
+            w = static_cast<int>(std::ceil(b.Width));
+            h = static_cast<int>(std::ceil(b.Height));
+        }
+        doc_->PushUndo();
+        if (doc_->GifMosaicCurrentFrame(x, y, w, h, Settings().mosaicSize)) {
+            gifCacheIdx_ = -1;
+            gifCacheRev_ = doc_->gifRev;
+            doc_->GifClearThumbs();
+            doc_->ClearRegion();
+            Refresh();
+            App::Instance().UpdateStatus();
+            App::Instance().ShowStatusMessage(L"当前帧已打码（保存 GIF 时写入文件）");
+        } else {
+            if (!doc_->undoStack.empty()) doc_->undoStack.pop_back();
+            App::Instance().ShowStatusMessage(L"打码失败：画面太小或帧数据异常");
+        }
+        return;
+    }
     if (!doc_->hasRegion && doc_->selectedIdx < 0) {
         App::Instance().ShowStatusMessage(L"请先用「选择」框选要打码的区域");
         return;
@@ -1294,11 +1392,24 @@ void Canvas::DeleteSelection() {
 void Canvas::Undo() {
     if (!doc_) return;
     doc_->Undo();
+    if (IsGifDoc()) {
+        // 撤销可能把某帧的像素还原了：丢掉解码缓存与缩略图
+        gifCacheIdx_ = -1;
+        gifCacheRev_ = doc_->gifRev;
+        doc_->GifClearThumbs();
+    }
     Refresh();
+    App::Instance().UpdateStatus();
 }
 
 void Canvas::Redo() {
     if (!doc_) return;
     doc_->Redo();
+    if (IsGifDoc()) {
+        gifCacheIdx_ = -1;
+        gifCacheRev_ = doc_->gifRev;
+        doc_->GifClearThumbs();
+    }
     Refresh();
+    App::Instance().UpdateStatus();
 }

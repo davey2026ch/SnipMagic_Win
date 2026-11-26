@@ -235,6 +235,8 @@ void AppSettings::Load() {
     drawAlpha = static_cast<BYTE>((std::max)(0, (std::min)(255, a)));
 
     borderCopyToExternal = IniInt(L"Settings", L"BorderCopyToExternal", 1) != 0;
+    captureCursorShot = IniInt(L"Settings", L"CaptureCursorShot", 0) != 0;
+    captureCursorGif = IniInt(L"Settings", L"CaptureCursorGif", 1) != 0;
 
     // 历史色里若混着固定常用色（红/黑/白），读入时就剔除并存回，避免与固定格重复
     {
@@ -266,6 +268,8 @@ void AppSettings::Save() const {
     IniWrite(L"Settings", L"DrawColor", util::ToHex(drawColor));
     IniWriteInt(L"Settings", L"DrawAlpha", drawAlpha);
     IniWriteInt(L"Settings", L"BorderCopyToExternal", borderCopyToExternal ? 1 : 0);
+    IniWriteInt(L"Settings", L"CaptureCursorShot", captureCursorShot ? 1 : 0);
+    IniWriteInt(L"Settings", L"CaptureCursorGif", captureCursorGif ? 1 : 0);
     IniWrite(L"Settings", L"RecentColors", RecentColorsToIni(recentColors));
     IniWrite(L"Settings", L"MinerUToken", util::TrimToken(mineruToken));
     IniWrite(L"Settings", L"VolcApiKey", util::TrimToken(volcApiKey));

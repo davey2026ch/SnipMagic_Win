@@ -227,6 +227,77 @@ inline int Scale(int v, int dpi) {
     return MulDiv(v, dpi, 96);
 }
 
+// 某个屏幕坐标所在显示器的 DPI（鼠标跨屏时按"光标那块屏"算光标尺寸）
+inline int DpiForPoint(POINT pt) {
+    HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    if (mon) {
+        typedef HRESULT(WINAPI* Fn)(HMONITOR, int, UINT*, UINT*);
+        static Fn fn = nullptr;
+        static bool inited = false;
+        if (!inited) {
+            inited = true;
+            HMODULE sh = LoadLibraryW(L"shcore.dll");
+            if (sh) fn = reinterpret_cast<Fn>(GetProcAddress(sh, "GetDpiForMonitor"));
+        }
+        if (fn) {
+            UINT dx = 0, dy = 0;
+            if (SUCCEEDED(fn(mon, 0 /*MDT_EFFECTIVE_DPI*/, &dx, &dy)) && dx > 0)
+                return static_cast<int>(dx);
+        }
+    }
+    return 96;
+}
+
+// 系统光标尺寸（按指定 DPI 取；Win10 1607+ 用 GetSystemMetricsForDpi）
+inline int SystemCursorSize(int dpi) {
+    typedef int(WINAPI* Fn)(int, UINT);
+    static Fn fn = nullptr;
+    static bool inited = false;
+    if (!inited) {
+        inited = true;
+        HMODULE u = GetModuleHandleW(L"user32.dll");
+        if (u) fn = reinterpret_cast<Fn>(GetProcAddress(u, "GetSystemMetricsForDpi"));
+    }
+    int v = fn ? fn(SM_CXCURSOR, static_cast<UINT>(dpi > 0 ? dpi : 96)) : 0;
+    if (v <= 0) v = GetSystemMetrics(SM_CXCURSOR);
+    return v > 0 ? v : 32;
+}
+
+// 把当前鼠标箭头画到 DC 上（originScreen = 该 DC 左上角对应的屏幕坐标）。
+// BitBlt 抓屏本身不含光标，"要带箭头"的画面就得用它补画。
+inline void DrawCursorOnDC(HDC dc, POINT originScreen) {
+    if (!dc) return;
+    CURSORINFO ci = { sizeof(CURSORINFO) };
+    if (!GetCursorInfo(&ci)) return;
+    if (!(ci.flags & CURSOR_SHOWING) || !ci.hCursor) return;
+
+    const POINT pt = { ci.ptScreenPos.x - originScreen.x, ci.ptScreenPos.y - originScreen.y };
+    const int dpi = DpiForPoint(ci.ptScreenPos);
+    const int size = SystemCursorSize(dpi);
+
+    // DrawIconEx 的 xy 是"图标左上角"，GetCursorInfo 给的却是热点（箭尖），
+    // 两者按缩放比例换算；热点需要图标位图的原始尺寸
+    ICONINFO ii = {};
+    int hotspotX = 0, hotspotY = 0;
+    int origW = size, origH = size;
+    if (GetIconInfo(ci.hCursor, &ii)) {
+        hotspotX = static_cast<int>(ii.xHotspot);
+        hotspotY = static_cast<int>(ii.yHotspot);
+        BITMAP bm = {};
+        if (ii.hbmMask && GetObjectW(ii.hbmMask, sizeof(bm), &bm)) {
+            origW = bm.bmWidth > 0 ? bm.bmWidth : size;
+            origH = bm.bmHeight > 0 ? bm.bmHeight : size;
+            if (origH >= origW * 2) origH = origW;   // 32 位带 alpha 的掩码是两倍高
+        }
+        if (ii.hbmColor) DeleteObject(ii.hbmColor);
+        if (ii.hbmMask) DeleteObject(ii.hbmMask);
+    }
+    const int dx = pt.x - (origW > 0 ? MulDiv(hotspotX, size, origW) : 0);
+    const int dy = pt.y - (origH > 0 ? MulDiv(hotspotY, size, origH) : 0);
+    DrawIconEx(dc, dx, dy, ci.hCursor, size, size, 0, nullptr, DI_NORMAL);
+}
+
+
 // Create HBITMAP from GDI+ Bitmap
 inline HBITMAP BitmapToHBITMAP(Gdiplus::Bitmap* bmp) {
     if (!bmp) return nullptr;

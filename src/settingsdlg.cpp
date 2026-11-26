@@ -11,7 +11,7 @@
 namespace {
 
 const int kW = 760;
-const int kH = 604;
+const int kH = 646;   // 增加「录制鼠标箭头」一行（+42）
 
 // 更新检测的后台结果槽（单实例单对话框）
 updater::UpdateInfo s_updInfo;
@@ -59,7 +59,9 @@ enum {
     IDC_LONG_HOTKEY = 3014,
     IDC_CHECK_UPDATE = 3015,
     IDC_BORDER_COPY = 3016,
-    IDC_GIF_FPS = 3017
+    IDC_GIF_FPS = 3017,
+    IDC_CURSOR_SHOT = 3018,
+    IDC_CURSOR_GIF = 3019
 };
 
 struct SetDlgState {
@@ -149,6 +151,10 @@ void DrawSwitch(DRAWITEMSTRUCT* dis, bool on) {
     RECT rc = dis->rcItem;
     REAL w = static_cast<REAL>(rc.right - rc.left);
     REAL h = static_cast<REAL>(rc.bottom - rc.top);
+    // owner-draw 按钮会先用系统按钮底色刷一遍底，暗色主题下会露出一块亮色；
+    // 这里先铺满弹窗底色，看起来才是"透明"的
+    SolidBrush bgb(ToGpColor(darkui::DlgBg()));
+    g.FillRectangle(&bgb, 0.0f, 0.0f, w, h);
     g.SetSmoothingMode(SmoothingModeAntiAlias);
 
     bool dark = darkui::Dark();
@@ -166,6 +172,44 @@ void DrawSwitch(DRAWITEMSTRUCT* dis, bool on) {
     REAL kx = on ? (w - d - 3.5f) : 3.5f;
     SolidBrush knobBrush(ToGpColor(RGB(255, 255, 255)));
     g.FillEllipse(&knobBrush, kx, 3.5f, d, d);
+}
+
+// 自绘复选框（设置页「录制鼠标箭头」用）：方框 + 勾 + 文字，深浅色都跟着主题走
+void DrawCheckBox(DRAWITEMSTRUCT* dis, bool on) {
+    if (!dis) return;
+    Graphics g(dis->hDC);
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    RECT rc = dis->rcItem;
+    const bool dark = darkui::Dark();
+    // 同 DrawSwitch：先把整块铺成弹窗底色，暗色下才不会露出亮色块
+    SolidBrush bgb(ToGpColor(darkui::DlgBg()));
+    g.FillRectangle(&bgb, 0.0f, 0.0f, static_cast<REAL>(rc.right - rc.left),
+                    static_cast<REAL>(rc.bottom - rc.top));
+    const int box = 16;
+    const int by = (rc.bottom - rc.top - box) / 2;
+    const COLORREF accent = Settings().themeColor;
+
+    SolidBrush fill(ToGpColor(on ? accent : (dark ? RGB(48, 48, 48) : RGB(255, 255, 255))));
+    g.FillRectangle(&fill, 0, by, box, box);
+    Pen border(ToGpColor(on ? accent : (dark ? RGB(120, 120, 120) : RGB(150, 150, 150))), 1.0f);
+    g.DrawRectangle(&border, 0.5f, by + 0.5f, box - 1.0f, box - 1.0f);
+    if (on) {
+        Pen tick(Color(255, 255, 255, 255), 2.0f);
+        g.DrawLine(&tick, 3.5f, by + 8.5f, 6.5f, by + 12.0f);
+        g.DrawLine(&tick, 6.5f, by + 12.0f, 12.5f, by + 4.5f);
+    }
+
+    wchar_t text[64] = {};
+    GetWindowTextW(dis->hwndItem, text, 64);
+    FontFamily fam(L"Microsoft YaHei");
+    Font f(&fam, 13.0f, FontStyleRegular, UnitPixel);
+    SolidBrush fg(ToGpColor(dark ? RGB(230, 230, 230) : RGB(32, 32, 32)));
+    StringFormat fmt;
+    fmt.SetAlignment(StringAlignmentNear);
+    fmt.SetLineAlignment(StringAlignmentCenter);
+    RectF lr(static_cast<REAL>(box + 6), 0, static_cast<REAL>(rc.right - rc.left - box - 6),
+             static_cast<REAL>(rc.bottom - rc.top));
+    g.DrawString(text, -1, &f, lr, &fmt, &fg);
 }
 
 // 主题下拉框箭头区域补画：系统主题画不出深色的下拉箭头按钮
@@ -211,6 +255,7 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLOREDIT:
     case WM_CTLCOLORLISTBOX:
+    case WM_CTLCOLORBTN:
         return darkui::CtlColor(msg, reinterpret_cast<HDC>(wParam));
     case WM_GETICON:
         // 标题栏不显示图标
@@ -231,6 +276,16 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (id == IDC_BORDER_COPY) {
             st->draft.borderCopyToExternal = !st->draft.borderCopyToExternal;
             InvalidateRect(GetDlgItem(hwnd, IDC_BORDER_COPY), nullptr, FALSE);
+            return 0;
+        }
+        if (id == IDC_CURSOR_SHOT) {
+            st->draft.captureCursorShot = !st->draft.captureCursorShot;
+            InvalidateRect(GetDlgItem(hwnd, IDC_CURSOR_SHOT), nullptr, FALSE);
+            return 0;
+        }
+        if (id == IDC_CURSOR_GIF) {
+            st->draft.captureCursorGif = !st->draft.captureCursorGif;
+            InvalidateRect(GetDlgItem(hwnd, IDC_CURSOR_GIF), nullptr, FALSE);
             return 0;
         }
         if (id == IDC_CHECK_UPDATE) {
@@ -383,6 +438,14 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         if (dis->CtlID == IDC_BORDER_COPY) {
             DrawSwitch(dis, st && st->draft.borderCopyToExternal);
+            return TRUE;
+        }
+        if (dis->CtlID == IDC_CURSOR_SHOT) {
+            DrawCheckBox(dis, st && st->draft.captureCursorShot);
+            return TRUE;
+        }
+        if (dis->CtlID == IDC_CURSOR_GIF) {
+            DrawCheckBox(dis, st && st->draft.captureCursorGif);
             return TRUE;
         }
         return 0;
@@ -563,6 +626,29 @@ bool SettingsDialog::Show(HWND owner) {
     }
     y += 42;
 
+    // 录制鼠标箭头：左侧标题 + 右侧两个复选（截图 / GIF录制）
+    label(L"录制鼠标箭头", 20, y);
+    {
+        HWND chkShot = CreateWindowW(L"BUTTON", L"截图",
+                                     WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                     140, y - 3, 80, 24, hwnd,
+                                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CURSOR_SHOT)),
+                                     hi, nullptr);
+        HWND chkGif = CreateWindowW(L"BUTTON", L"GIF录制",
+                                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                    228, y - 3, 110, 24, hwnd,
+                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CURSOR_GIF)),
+                                    hi, nullptr);
+        (void)chkShot;
+        (void)chkGif;
+        HWND cursorHint = CreateWindowW(L"STATIC",
+                                        L"勾选后把鼠标箭头一起画进画面",
+                                        WS_CHILD | WS_VISIBLE,
+                                        346, y + 2, 330, 22, hwnd, nullptr, hi, nullptr);
+        SendMessageW(cursorHint, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    }
+    y += 42;
+
     // 带边框复制到外部软件（自绘滑动开关 + 右侧说明）
     label(L"带边框复制", 20, y);
     HWND borderSw = CreateWindowW(L"BUTTON", L"",
@@ -698,6 +784,8 @@ bool SettingsDialog::Show(HWND owner) {
     if (s.gifFps < 1) s.gifFps = 1;
     if (s.gifFps > 60) s.gifFps = 60;
     s.borderCopyToExternal = st.draft.borderCopyToExternal;
+    s.captureCursorShot = st.draft.captureCursorShot;
+    s.captureCursorGif = st.draft.captureCursorGif;
     s.mineruToken = util::TrimToken(st.draft.mineruToken);
     s.volcApiKey = util::TrimToken(st.draft.volcApiKey);
     // themeColor 保持原值（设置界面已不再提供）
