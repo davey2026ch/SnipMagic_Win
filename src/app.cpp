@@ -6,6 +6,7 @@
 #include "compareview.h"
 #include "extract.h"
 #include "longcapture.h"
+#include "gifrecord.h"
 #include "version.h"
 #include "updater.h"
 #include "darkui.h"
@@ -103,6 +104,25 @@ void DrawCommandIcon(Graphics& g, int id, REAL x, REAL y, REAL s, Color c) {
         g.DrawLine(&p, x + s * 0.35f, y + s * 0.56f, x + s * 0.35f, y + s * 0.82f);
         g.DrawLine(&p, x + s * 0.25f, y + s * 0.72f, x + s * 0.35f, y + s * 0.84f);
         g.DrawLine(&p, x + s * 0.45f, y + s * 0.72f, x + s * 0.35f, y + s * 0.84f);
+        break;
+    }
+    case ID_CMD_GIF_RECORD: { // GIF 录制：胶片框 + 播放三角
+        GraphicsPath strip;
+        RoundRectPath(strip, x + s * 0.04f, y + s * 0.16f, s * 0.92f, s * 0.68f, s * 0.12f);
+        g.DrawPath(&p, &strip);
+        // 左侧胶片孔
+        g.FillRectangle(&b, x + s * 0.12f, y + s * 0.30f, s * 0.10f, s * 0.10f);
+        g.FillRectangle(&b, x + s * 0.12f, y + s * 0.60f, s * 0.10f, s * 0.10f);
+        // 右侧胶片孔
+        g.DrawRectangle(&p, x + s * 0.78f, y + s * 0.30f, s * 0.10f, s * 0.10f);
+        g.DrawRectangle(&p, x + s * 0.78f, y + s * 0.60f, s * 0.10f, s * 0.10f);
+        // 中间的播放三角
+        PointF tri[3] = {
+            PointF(x + s * 0.38f, y + s * 0.32f),
+            PointF(x + s * 0.38f, y + s * 0.68f),
+            PointF(x + s * 0.62f, y + s * 0.50f)
+        };
+        g.FillPolygon(&b, tri, 3);
         break;
     }
     case ID_CMD_MOSAIC: { // 马赛克：2x2 圆角方块
@@ -428,6 +448,12 @@ int App::Run() {
         // Global shortcuts when canvas doesn't have focus
         if (msg.message == WM_KEYDOWN) {
             bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            // 动图页签：方向键逐帧、空格播放/暂停（画布没焦点时也生效）
+            if (!ctrl && (msg.wParam == VK_LEFT || msg.wParam == VK_RIGHT ||
+                          msg.wParam == VK_SPACE || msg.wParam == VK_HOME ||
+                          msg.wParam == VK_END)) {
+                if (Canvas::Instance().HandleGifKey(msg.wParam)) continue;
+            }
             if (ctrl && msg.wParam == 'Z') {
                 if (GetKeyState(VK_SHIFT) & 0x8000) Canvas::Instance().Redo();
                 else Canvas::Instance().Undo();
@@ -588,6 +614,46 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                            L"\n\n可稍后在设置中手动检测重试。").c_str(),
                     L"软件更新", MB_ICONWARNING);
         return 0;
+    case WM_MOUSEWHEEL: {
+        // 光标在页签条上时：滚轮左右移动页签
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ScreenToClient(hwnd, &pt);
+        TabMetrics tm = ComputeTabs();
+        if (tm.needScroll && pt.y >= tm.top) {
+            const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            tabScroll_ -= (delta > 0 ? 1 : -1) * util::Scale(120, dpi_);
+            ClampTabScroll();
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        // 其余位置：把滚轮转给光标下的画布/对比窗。
+        // 否则截完图焦点还在主窗口上，滚轮/「Ctrl+滚轮缩放」都到不了画布（按了没反应）。
+        POINT sp = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        HWND under = nullptr;
+        RECT cr = {};
+        HWND canvas = Canvas::Instance().Hwnd();
+        if (canvas && GetWindowRect(canvas, &cr) && PtInRect(&cr, sp)) {
+            under = canvas;
+        } else {
+            HWND cmp = CompareView::Instance().Hwnd();
+            if (compareMode_ && cmp && GetWindowRect(cmp, &cr) && PtInRect(&cr, sp)) under = cmp;
+        }
+        if (under) {
+            const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            Document* ad = ActiveDoc();
+            // Ctrl+滚轮 = 缩放（与图片页一致：上滚缩小、下滚放大，以光标为中心）
+            if (under == canvas && ad && !ad->IsGif() &&
+                (GetKeyState(VK_CONTROL) & 0x8000)) {
+                POINT cp = sp;
+                ScreenToClient(canvas, &cp);
+                Canvas::Instance().ZoomAt(delta > 0 ? (1.0f / 1.1f) : 1.1f, cp.x, cp.y);
+            } else {
+                SendMessageW(under, WM_MOUSEWHEEL, wParam, lParam);
+            }
+            return 0;
+        }
+        break;
+    }
     case WM_MOUSELEAVE:
         hoverLeft_ = -1;
         hoverTop_ = -1;
@@ -666,7 +732,8 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         COLORREF bgc = sel ? (dark ? RGB(60, 60, 60) : RGB(229, 229, 229))
                            : (dark ? RGB(45, 45, 45) : RGB(250, 250, 250));
         SolidBrush bg(ToGpColor(bgc));
-        g.FillRectangle(&bg, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
+        g.FillRectangle(&bg, static_cast<INT>(rc.left), static_cast<INT>(rc.top),
+                        static_cast<INT>(rc.right - rc.left), static_cast<INT>(rc.bottom - rc.top));
         if (checked) {
             // 当前序号：左侧主题色竖条
             COLORREF accent = Settings().themeColor;
@@ -698,7 +765,7 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             for (;;) {
                 int r = MessageBoxW(hwnd,
                                     L"还有打开的截图页签，关闭前是否保存？\n\n"
-                                    L"是 = 选择路径保存全部后退出\n"
+                                    L"是 = 全部保存后退出（自动存到「下载」里以当前时间命名的文件夹）\n"
                                     L"否 = 不保存直接退出\n"
                                     L"取消 = 不退出，留在当前界面",
                                     APP_NAME, MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST);
@@ -736,6 +803,9 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         RemoveHotkeyHook();
         if (LongCapture::Instance().IsActive()) {
             LongCapture::Instance().Cancel();
+        }
+        if (GifRecorder::Instance().IsOpen()) {
+            GifRecorder::Instance().Cancel();
         }
         PostQuitMessage(0);
         return 0;
@@ -796,6 +866,8 @@ void App::BuildToolbars() {
            L"截图（" + Settings().hotkeyText + L"）");
     addTop(ID_CMD_LONG_CAPTURE, L"长截图",
            L"长截图（" + Settings().longHotkeyText + L"）");
+    // 文字只留 "GIF"：与「马赛克」等宽（66），完整说明放进悬浮提示
+    addTop(ID_CMD_GIF_RECORD, L"GIF", L"GIF 录制（框选区域录制成动图，停止后生成可播放的动图页签）");
     addTop(ID_CMD_MOSAIC, L"马赛克");
     addTop(ID_CMD_EXTRACT, L"提取内容");
     addTop(ID_CMD_EXTRACT_VECTOR, L"提取矢量图");
@@ -1159,6 +1231,9 @@ void App::LayoutChildren() {
     // compare-mode controls: right-aligned on top bar
     LayoutCompareButtons();
 
+    // 窗口尺寸变了：页签滚动量要重新收敛，否则窄窗口切回宽窗口时页签会“飘”在中间
+    ClampTabScroll();
+
     int canvasTop = topH_;
     int canvasLeft = leftW_;
     int canvasRight = rc.right;
@@ -1302,7 +1377,8 @@ void App::OnPaint() {
                 SolidBrush hi(ToGpColor(s.themeColor, 40));
                 g.FillRectangle(&hi, b.rc.left, b.rc.top, bw, bh);
                 Pen edge(ToGpColor(s.themeColor), 2);
-                g.DrawLine(&edge, b.rc.left + 1, b.rc.top + 4, b.rc.left + 1, b.rc.bottom - 4);
+                g.DrawLine(&edge, static_cast<REAL>(b.rc.left + 1), static_cast<REAL>(b.rc.top + 4),
+                           static_cast<REAL>(b.rc.left + 1), static_cast<REAL>(b.rc.bottom - 4));
                 iconColor = s.themeColor;
             } else if (hover) {
                 SolidBrush hi(ToGpColor(s.IsDarkTheme() ? RGB(70, 70, 70) : RGB(230, 230, 235)));
@@ -1330,9 +1406,10 @@ void App::OnPaint() {
             return;
         }
 
-        // top bar buttons: 与底部页签同一套配色（未选 250 底 / 悬停 230 / 按下主题色+白字）
-        // 「截图 / 长截图」为主操作按钮：常显主题蓝（与 P1 激活时一致），悬停稍深以示反馈
-        bool primary = (b.id == ID_CMD_CAPTURE || b.id == ID_CMD_LONG_CAPTURE);
+        // 顶部按钮：与底部页签同一套配色（未选 250 底 / 悬停 230 / 按下主题色+白字）
+        // 「截图 / 长截图 / GIF」为主操作按钮：常显主题蓝（与 P1 激活时一致），悬停稍深以示反馈
+        bool primary = (b.id == ID_CMD_CAPTURE || b.id == ID_CMD_LONG_CAPTURE ||
+                        b.id == ID_CMD_GIF_RECORD);
         Color fill;
         if (primary) {
             COLORREF base = s.themeColor;
@@ -1377,9 +1454,17 @@ void App::OnPaint() {
     for (size_t i = 0; i < topBtns_.size(); ++i)
         drawBtn(topBtns_[i], static_cast<int>(i) == pressedTop_,
                 static_cast<int>(i) == hoverTop_, false);
-    for (size_t i = 0; i < leftBtns_.size(); ++i) {
-        bool active = leftBtns_[i].toggle && leftBtns_[i].tool == cur;
-        drawBtn(leftBtns_[i], active, static_cast<int>(i) == hoverLeft_, true);
+    {
+        // 左侧工具栏裁剪到「画布区」：窗口很矮时按钮不会画到页签条上
+        const int railBottom = ComputeTabs().top;
+        Region oldClip;
+        g.GetClip(&oldClip);
+        g.SetClip(Rect(0, topH_, leftW_, (std::max)(0, railBottom - topH_)));
+        for (size_t i = 0; i < leftBtns_.size(); ++i) {
+            bool active = leftBtns_[i].toggle && leftBtns_[i].tool == cur;
+            drawBtn(leftBtns_[i], active, static_cast<int>(i) == hoverLeft_, true);
+        }
+        g.SetClip(&oldClip);
     }
 
     // compare-mode right-side controls
@@ -1447,39 +1532,61 @@ void App::OnPaint() {
     }
 
     // tab bar background
-    int tabTop = h - statusH_ - tabH_;
+    TabMetrics tm = ComputeTabs();
+    int tabTop = tm.top;
     SolidBrush tabBg(ToGpColor(s.IsDarkTheme() ? RGB(40, 40, 40) : RGB(230, 230, 230)));
     g.FillRectangle(&tabBg, 0, tabTop, w, tabH_);
     g.DrawLine(&borderPen, 0, tabTop, w, tabTop);
 
-    // tabs — width is 50% of the previous 72px
-    // 页签从窗口左侧边框贴紧开始（不再对齐画布左边，避免左侧留一大片空白）
-    int tx = util::Scale(6, dpi_);
-    int ty = tabTop + 4;
-    int th = tabH_ - 8;
-    int tabW = util::Scale(36, dpi_);
-    for (size_t i = 0; i < docs_.size(); ++i) {
-        int tw = tabW;
-        RECT trc = { tx, ty, tx + tw, ty + th };
-        bool active = static_cast<int>(i) == activeIdx_;
-        bool inCompare = compareMode_ &&
-                         (static_cast<int>(i) == activeIdx_ || static_cast<int>(i) == compareIdx_);
-        Color tc = active ? ToGpColor(s.themeColor)
-                          : (inCompare ? ToGpColor(s.IsDarkTheme() ? RGB(70, 90, 70) : RGB(210, 230, 210))
-                                       : ToGpColor(s.IsDarkTheme() ? RGB(55, 55, 55) : RGB(250, 250, 250)));
-        SolidBrush tb(tc);
-        g.FillRectangle(&tb, trc.left, trc.top, tw, th);
-        Pen tp(ToGpColor(s.BorderColor()), 1);
-        g.DrawRectangle(&tp, trc.left, trc.top, tw - 1, th - 1);
-        Color fc = active ? Color(255, 255, 255) : ToGpColor(text);
-        SolidBrush fb(fc);
-        StringFormat fmt;
-        fmt.SetAlignment(StringAlignmentCenter);
-        fmt.SetLineAlignment(StringAlignmentCenter);
-        RectF lr(static_cast<REAL>(trc.left), static_cast<REAL>(trc.top),
-                 static_cast<REAL>(tw), static_cast<REAL>(th));
-        g.DrawString(docs_[i]->name.c_str(), -1, &fontSmall, lr, &fmt, &fb);
-        tx += tw + 4;
+    // tabs：页签从左贴边排开，超出窗口时靠横向滚动条左右移动
+    {
+        Region oldClip;
+        g.GetClip(&oldClip);
+        g.SetClip(Rect(0, tabTop, w, tabH_));
+        for (size_t i = 0; i < docs_.size(); ++i) {
+            RECT trc = TabRect(tm, static_cast<int>(i));
+            if (trc.right <= 0 || trc.left >= w) continue;
+            const int tw = trc.right - trc.left;
+            const int th = trc.bottom - trc.top;
+            bool active = static_cast<int>(i) == activeIdx_;
+            bool inCompare = compareMode_ &&
+                             (static_cast<int>(i) == activeIdx_ || static_cast<int>(i) == compareIdx_);
+            Color tc = active ? ToGpColor(s.themeColor)
+                              : (inCompare ? ToGpColor(s.IsDarkTheme() ? RGB(70, 90, 70) : RGB(210, 230, 210))
+                                           : ToGpColor(s.IsDarkTheme() ? RGB(55, 55, 55) : RGB(250, 250, 250)));
+            SolidBrush tb(tc);
+            g.FillRectangle(&tb, trc.left, trc.top, tw, th);
+            Pen tp(ToGpColor(s.BorderColor()), 1);
+            g.DrawRectangle(&tp, trc.left, trc.top, tw - 1, th - 1);
+            Color fc = active ? Color(255, 255, 255) : ToGpColor(text);
+            SolidBrush fb(fc);
+            StringFormat fmt;
+            fmt.SetAlignment(StringAlignmentCenter);
+            fmt.SetLineAlignment(StringAlignmentCenter);
+            RectF lr(static_cast<REAL>(trc.left), static_cast<REAL>(trc.top),
+                     static_cast<REAL>(tw), static_cast<REAL>(th));
+            g.DrawString(docs_[i]->name.c_str(), -1, &fontSmall, lr, &fmt, &fb);
+        }
+        g.SetClip(&oldClip);
+    }
+
+    // 页签横向滚动条（只在页签超出可用宽度时出现）
+    if (tm.needScroll) {
+        const int trackX = tm.padX;
+        const int trackW = (std::max)(10, w - tm.padX * 2);
+        SolidBrush trackBr(ToGpColor(s.IsDarkTheme() ? RGB(52, 52, 52) : RGB(214, 214, 214)));
+        g.FillRectangle(&trackBr, trackX, tm.sbTop, trackW, tm.sbH);
+        int thumbW = (std::max)(util::Scale(36, dpi_),
+                                static_cast<int>(static_cast<long long>(trackW) * tm.viewW /
+                                                 (std::max)(1, tm.contentW)));
+        if (thumbW > trackW) thumbW = trackW;
+        const int range = trackW - thumbW;
+        const int thumbX = trackX +
+                           (tm.maxScroll > 0
+                                ? static_cast<int>(static_cast<long long>(tabScroll_) * range / tm.maxScroll)
+                                : 0);
+        SolidBrush thumbBr(ToGpColor(s.IsDarkTheme() ? RGB(110, 110, 110) : RGB(150, 150, 150)));
+        g.FillRectangle(&thumbBr, thumbX, tm.sbTop, thumbW, tm.sbH);
     }
 
     BitBlt(hdc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
@@ -1521,6 +1628,7 @@ void App::OnCommand(int id) {
     switch (id) {
     case ID_CMD_CAPTURE: StartCapture(); break;
     case ID_CMD_LONG_CAPTURE: StartLongCapture(); break;
+    case ID_CMD_GIF_RECORD: GifRecorder::Instance().Open(hwnd_); break;
     case ID_CMD_MOSAIC: Canvas::Instance().ApplyMosaicToSelection(); break;
     case ID_CMD_EXTRACT: extract::RunExtractFlow(hwnd_, ActiveDoc()); break;
     case ID_CMD_EXTRACT_VECTOR: extract::RunExtractVector(hwnd_, ActiveDoc()); break;
@@ -1724,10 +1832,29 @@ void App::AddDocument(std::unique_ptr<Bitmap> bmp) {
     activeIdx_ = static_cast<int>(docs_.size()) - 1;
     Canvas::Instance().SetDocument(docs_[activeIdx_].get());
     Canvas::Instance().ResetZoom();
+    EnsureTabVisible(activeIdx_);
     UpdateTabBar();
     UpdateTitle();
     UpdateStatus();
     InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void App::AddGifDocument(std::shared_ptr<gifcodec::Anim> anim) {
+    if (!anim || anim->Empty()) return;
+    wchar_t name[16];
+    swprintf_s(name, L"P%d", nextDocId_++);
+    auto doc = std::make_unique<Document>(std::move(anim), nextDocId_ - 1, std::wstring(name));
+    docs_.push_back(std::move(doc));
+    activeIdx_ = static_cast<int>(docs_.size()) - 1;
+    Canvas::Instance().SetDocument(docs_[activeIdx_].get());
+    EnsureTabVisible(activeIdx_);
+    UpdateTabBar();
+    UpdateTitle();
+    UpdateStatus();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowStatusMessage(util::Format(L"GIF 录制完成：%d 帧 · %d×%d，可播放/逐帧预览",
+                                   docs_[activeIdx_]->GifFrameCount(),
+                                   docs_[activeIdx_]->Width(), docs_[activeIdx_]->Height()));
 }
 
 void App::ActivateDoc(int idx) {
@@ -1748,6 +1875,7 @@ void App::ActivateDoc(int idx) {
     UpdateTabBar();
     UpdateTitle();
     UpdateStatus();
+    EnsureTabVisible(idx);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -1803,13 +1931,29 @@ void App::CloseDoc(int idx) {
 bool App::SaveDoc(int idx) {
     if (idx < 0 || idx >= static_cast<int>(docs_.size())) return false;
     Document* d = docs_[idx].get();
-    std::wstring def = d->name + L".png";
+    const bool isGif = d->IsGif();
+    std::wstring def = d->name + (isGif ? L".gif" : L".png");
+    const wchar_t* filter = isGif
+        ? L"GIF 动图\0*.gif\0所有文件\0*.*\0"
+        : L"PNG 图片\0*.png\0JPG 图片\0*.jpg\0所有文件\0*.*\0";
     std::wstring path = util::OpenSaveDialog(
-        hwnd_, true,
-        L"PNG 图片\0*.png\0JPG 图片\0*.jpg\0所有文件\0*.*\0",
-        L"png", def.c_str(), L"保存截图", util::DownloadsDir().c_str());
+        hwnd_, true, filter,
+        isGif ? L"gif" : L"png",
+        def.c_str(),
+        isGif ? L"保存 GIF 动图" : L"保存截图",
+        util::DownloadsDir().c_str(),
+        /*overwritePrompt=*/false);   // 同名文件改用自定义三选一提示
     if (path.empty()) return false;
-    bool jpg = path.size() > 4 && _wcsicmp(path.c_str() + path.size() - 4, L".jpg") == 0;
+
+    // 同名文件：替换 / 追加序号（P1_001.png）/ 取消
+    if (util::FileExists(path)) {
+        const int choice = util::AskOverwriteChoice(hwnd_, path);
+        if (choice == 0) return false;
+        if (choice == 2) path = util::NumberedPath(path);
+    }
+
+    const bool jpg = !isGif && path.size() > 4 &&
+                     _wcsicmp(path.c_str() + path.size() - 4, L".jpg") == 0;
     if (d->SaveAs(path, jpg)) {
         ShowStatusMessage(L"已保存：" + path);
         return true;
@@ -1818,31 +1962,68 @@ bool App::SaveDoc(int idx) {
     return false;
 }
 
+bool App::SaveFrameInteractive(std::unique_ptr<Bitmap> bmp, const std::wstring& defName) {
+    if (!bmp) return false;
+    std::wstring def = defName + L".png";
+    std::wstring path = util::OpenSaveDialog(
+        hwnd_, true,
+        L"PNG 图片\0*.png\0JPG 图片\0*.jpg\0所有文件\0*.*\0",
+        L"png", def.c_str(), L"保存当前帧", util::DownloadsDir().c_str(),
+        /*overwritePrompt=*/false);
+    if (path.empty()) return false;
+    if (util::FileExists(path)) {
+        const int choice = util::AskOverwriteChoice(hwnd_, path);
+        if (choice == 0) return false;
+        if (choice == 2) path = util::NumberedPath(path);
+    }
+    const bool jpg = path.size() > 4 && _wcsicmp(path.c_str() + path.size() - 4, L".jpg") == 0;
+    if (!util::SaveBitmapToFile(bmp.get(), path, jpg)) {
+        MessageBoxW(hwnd_, L"保存失败", APP_NAME, MB_ICONERROR);
+        return false;
+    }
+    ShowStatusMessage(L"当前帧已保存：" + path);
+    return true;
+}
+
 bool App::SaveAllDocs() {
     if (docs_.empty()) {
         ShowStatusMessage(L"没有可保存的页签");
         return true;
     }
-    std::wstring dir = util::BrowseFolder(hwnd_, L"选择保存目录", util::DownloadsDir().c_str());
-    if (dir.empty()) {
-        // 用户取消路径选择：调用方据此决定不退出
-        return false;
-    }
+    // 一次全部保存 = 自动在「下载」里建一个以当前时间命名的文件夹（202611251526）
+    std::wstring base = util::DownloadsDir();
+    if (base.empty()) base = util::GetExeDir();
+    if (!base.empty() && (base.back() == L'\\' || base.back() == L'/')) base.pop_back();
 
-    int choice = MessageBoxW(hwnd_, L"是否使用 JPG 格式？\n（否 = PNG）", APP_NAME,
-                             MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST);
-    if (choice == IDCANCEL) {
-        // 用户取消格式选择：同样视为未完成保存
-        return false;
+    std::wstring stamp = util::TimeStampCompact();
+    std::wstring folder = base + L"\\" + stamp;
+    for (int i = 2; i <= 99; ++i) {
+        const DWORD a = GetFileAttributesW(folder.c_str());
+        if (a == INVALID_FILE_ATTRIBUTES) break;
+        folder = base + L"\\" + stamp + L"_" + std::to_wstring(i);
     }
-    bool jpg = (choice == IDYES);
+    if (!CreateDirectoryW(folder.c_str(), nullptr)) {
+        const DWORD err = GetLastError();
+        if (err != ERROR_ALREADY_EXISTS) {
+            MessageBoxW(hwnd_, (L"创建保存文件夹失败：\n" + folder).c_str(), APP_NAME, MB_ICONERROR);
+            return false;
+        }
+    }
 
     int n = 0;
+    int failed = 0;
     for (auto& d : docs_) {
-        std::wstring path = dir + L"\\" + d->name + (jpg ? L".jpg" : L".png");
-        if (d->SaveAs(path, jpg)) ++n;
+        const bool isGif = d->IsGif();
+        std::wstring path = folder + L"\\" + d->name + (isGif ? L".gif" : L".png");
+        if (util::FileExists(path)) path = util::NumberedPath(path);
+        if (d->SaveAs(path, false)) ++n;
+        else ++failed;
     }
-    ShowStatusMessage(util::Format(L"已保存 %d 张到 %s", n, dir.c_str()));
+    if (failed > 0) {
+        MessageBoxW(hwnd_, util::Format(L"有 %d 个页签保存失败（其余已保存到下方文件夹）", failed).c_str(),
+                    APP_NAME, MB_ICONWARNING);
+    }
+    ShowStatusMessage(util::Format(L"已保存 %d 张到 %s", n, folder.c_str()));
     return true;
 }
 
@@ -1960,6 +2141,7 @@ void App::UpdateTitle() {
 }
 
 void App::UpdateTabBar() {
+    ClampTabScroll();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -1971,22 +2153,34 @@ void App::UpdateStatus() {
     std::wstring p3;
     std::wstring p4;
     if (d) {
-        float z = d->zoom * 100.0f;
-        p2 = util::Format(L"页签 %s  ·  %d×%d  ·  缩放 %.0f%%",
-                          d->name.c_str(), d->Width(), d->Height(), z);
-        int rx, ry, rw, rh;
-        if (d->GetRegion(rx, ry, rw, rh)) {
-            p3 = util::Format(L"框选 %d×%d  ·  可马赛克/复制", rw, rh);
-        } else if (d->GetSelected()) {
-            RectF b;
-            d->GetSelected()->GetBounds(b);
-            p3 = util::Format(L"选中 %d×%d  ·  %s",
-                              static_cast<int>(b.Width), static_cast<int>(b.Height),
-                              AnnTypeLabel(d->GetSelected()->type));
-        } else if (hasHover_) {
-            p3 = util::Format(L"坐标 (%.0f, %.0f)", hoverIx_, hoverIy_);
+        if (d->IsGif()) {
+            p2 = util::Format(L"动图 %s · %d 帧 · %d×%d",
+                              d->name.c_str(), d->GifFrameCount(), d->Width(), d->Height());
+            if (d->gifZoom > 1.001f || d->gifZoom < 0.999f) {
+                p2 += util::Format(L" · %d%%", static_cast<int>(d->gifZoom * 100.0f + 0.5f));
+            }
+            p3 = util::Format(L"第 %d/%d 帧 · ←/→ 逐帧",
+                              d->gifFrame + 1, d->GifFrameCount());
+            p4 = std::wstring(d->gifPlaying ? L"播放中" : L"已暂停") +
+                 (d->gifLoop ? L" · 循环" : L" · 单次");
+        } else {
+            float z = d->zoom * 100.0f;
+            p2 = util::Format(L"页签 %s  ·  %d×%d  ·  缩放 %.0f%%",
+                              d->name.c_str(), d->Width(), d->Height(), z);
+            int rx, ry, rw, rh;
+            if (d->GetRegion(rx, ry, rw, rh)) {
+                p3 = util::Format(L"框选 %d×%d  ·  可马赛克/复制", rw, rh);
+            } else if (d->GetSelected()) {
+                RectF b;
+                d->GetSelected()->GetBounds(b);
+                p3 = util::Format(L"选中 %d×%d  ·  %s",
+                                  static_cast<int>(b.Width), static_cast<int>(b.Height),
+                                  AnnTypeLabel(d->GetSelected()->type));
+            } else if (hasHover_) {
+                p3 = util::Format(L"坐标 (%.0f, %.0f)", hoverIx_, hoverIy_);
+            }
+            p4 = L"颜色 " + util::ToHex(Canvas::Instance().GetDrawColor());
         }
-        p4 = L"颜色 " + util::ToHex(Canvas::Instance().GetDrawColor());
     } else {
         p2 = L"无文档";
         p4 = L"颜色 " + util::ToHex(Canvas::Instance().GetDrawColor());
@@ -2030,6 +2224,8 @@ int App::HitTopButton(int x, int y) const {
 }
 
 int App::HitLeftButton(int x, int y) const {
+    // 只命中画布区内的左侧按钮：窗口太矮时按钮不会盖到页签条上去抢点击
+    if (y >= ComputeTabs().top) return -1;
     POINT pt = { x, y };
     for (size_t i = 0; i < leftBtns_.size(); ++i) {
         if (PtInRect(&leftBtns_[i].rc, pt)) return static_cast<int>(i);
@@ -2037,18 +2233,65 @@ int App::HitLeftButton(int x, int y) const {
     return -1;
 }
 
+App::TabMetrics App::ComputeTabs() const {
+    TabMetrics m;
+    RECT rc;
+    GetClientRect(hwnd_, const_cast<RECT*>(&rc));
+    m.padX = util::Scale(6, dpi_);
+    m.tabW = util::Scale(36, dpi_);
+    m.gap = util::Scale(4, dpi_);
+    m.top = rc.bottom - statusH_ - tabH_;
+    m.innerTop = m.top + util::Scale(3, dpi_);
+    m.innerH = tabH_ - util::Scale(12, dpi_);
+    if (m.innerH < util::Scale(14, dpi_)) m.innerH = util::Scale(14, dpi_);
+    const int n = static_cast<int>(docs_.size());
+    m.contentW = (n > 0) ? (m.padX * 2 + n * m.tabW + (n - 1) * m.gap) : 0;
+    m.viewW = rc.right;
+    m.maxScroll = (std::max)(0, m.contentW - m.viewW);
+    m.needScroll = m.maxScroll > 0;
+    m.sbH = util::Scale(5, dpi_);
+    m.sbTop = m.top + tabH_ - m.sbH - util::Scale(3, dpi_);
+    return m;
+}
+
+RECT App::TabRect(const TabMetrics& m, int idx) const {
+    const int x = m.padX + idx * (m.tabW + m.gap) - tabScroll_;
+    RECT r = { x, m.innerTop, x + m.tabW, m.innerTop + m.innerH };
+    return r;
+}
+
+void App::ClampTabScroll() {
+    TabMetrics m = ComputeTabs();
+    if (tabScroll_ < 0) tabScroll_ = 0;
+    if (tabScroll_ > m.maxScroll) tabScroll_ = m.maxScroll;
+}
+
+void App::EnsureTabVisible(int idx) {
+    if (idx < 0) return;
+    TabMetrics m = ComputeTabs();
+    if (!m.needScroll) {
+        tabScroll_ = 0;
+        return;
+    }
+    const int left = m.padX + idx * (m.tabW + m.gap) - tabScroll_;
+    const int right = left + m.tabW;
+    if (left < m.padX) {
+        tabScroll_ = idx * (m.tabW + m.gap);
+    } else if (right > m.viewW - m.padX) {
+        tabScroll_ += (right - (m.viewW - m.padX));
+    }
+    ClampTabScroll();
+}
+
 int App::HitTab(int x, int y) const {
     RECT rc;
     GetClientRect(hwnd_, const_cast<RECT*>(&rc));
-    int h = rc.bottom;
-    int tabTop = h - statusH_ - tabH_;
-    if (y < tabTop || y >= tabTop + tabH_) return -1;
-    int tx = util::Scale(6, dpi_); // 与绘制处保持一致：贴紧左侧边框
-    int tw = util::Scale(36, dpi_); // 50% of previous 72px
+    TabMetrics m = ComputeTabs();
+    if (y < m.innerTop || y >= m.innerTop + m.innerH) return -1;
+    if (x < 0 || x >= rc.right) return -1;
     for (size_t i = 0; i < docs_.size(); ++i) {
-        RECT trc = { tx, tabTop + 4, tx + tw, tabTop + 4 + tabH_ - 8 };
+        RECT trc = TabRect(m, static_cast<int>(i));
         if (PtInRect(&trc, { x, y })) return static_cast<int>(i);
-        tx += tw + 4;
     }
     return -1;
 }
@@ -2073,6 +2316,45 @@ void App::OnLButtonDown(int x, int y) {
         OnCommand(leftBtns_[left].id);
         return;
     }
+    // 页签横向滚动条：拖滑块 / 点空白跳转
+    {
+        TabMetrics tm = ComputeTabs();
+        if (tm.needScroll) {
+            RECT rc;
+            GetClientRect(hwnd_, &rc);
+            const int trackW = (std::max)(10, static_cast<int>(rc.right) - tm.padX * 2);
+            RECT sbr = { tm.padX, tm.sbTop, tm.padX + trackW, tm.sbTop + tm.sbH };
+            POINT pt = { x, y };
+            if (PtInRect(&sbr, pt)) {
+                int thumbW = (std::max)(util::Scale(36, dpi_),
+                                        static_cast<int>(static_cast<long long>(trackW) * tm.viewW /
+                                                         (std::max)(1, tm.contentW)));
+                if (thumbW > trackW) thumbW = trackW;
+                const int range = trackW - thumbW;
+                const int thumbX = sbr.left +
+                                   (tm.maxScroll > 0
+                                        ? static_cast<int>(static_cast<long long>(tabScroll_) *
+                                                           range / tm.maxScroll)
+                                        : 0);
+                if (x >= thumbX && x < thumbX + thumbW) {
+                    tabDragThumb_ = true;
+                    tabDragOffset_ = x - thumbX;
+                } else {
+                    int target = tm.maxScroll;
+                    if (range > 0) {
+                        target = static_cast<int>(static_cast<long long>(x - sbr.left - thumbW / 2) *
+                                                  tm.maxScroll / range);
+                    }
+                    tabScroll_ = (std::max)(0, (std::min)(target, tm.maxScroll));
+                    tabDragThumb_ = true;
+                    tabDragOffset_ = thumbW / 2;
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                }
+                SetCapture(hwnd_);
+                return;
+            }
+        }
+    }
     int tab = HitTab(x, y);
     if (tab >= 0) {
         ActivateDoc(tab);
@@ -2081,6 +2363,11 @@ void App::OnLButtonDown(int x, int y) {
 }
 
 void App::OnLButtonUp(int x, int y) {
+    if (tabDragThumb_) {
+        tabDragThumb_ = false;
+        ReleaseCapture();
+        return;
+    }
     if (pressedTop_ < 0) return;
     int top = HitTopButton(x, y);
     bool fire = (top == pressedTop_);
@@ -2101,6 +2388,24 @@ void App::OnRButtonDown(int x, int y) {
 }
 
 void App::OnMouseMove(int x, int y) {
+    if (tabDragThumb_) {
+        TabMetrics tm = ComputeTabs();
+        RECT rc;
+        GetClientRect(hwnd_, &rc);
+        const int trackW = (std::max)(10, static_cast<int>(rc.right) - tm.padX * 2);
+        int thumbW = (std::max)(util::Scale(36, dpi_),
+                                static_cast<int>(static_cast<long long>(trackW) * tm.viewW /
+                                                 (std::max)(1, tm.contentW)));
+        if (thumbW > trackW) thumbW = trackW;
+        const int range = trackW - thumbW;
+        if (range > 0 && tm.maxScroll > 0) {
+            const int pos = static_cast<int>(static_cast<long long>(x - tm.padX - tabDragOffset_) *
+                                             tm.maxScroll / range);
+            tabScroll_ = (std::max)(0, (std::min)(pos, tm.maxScroll));
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        return;
+    }
     TRACKMOUSEEVENT tme = {};
     tme.cbSize = sizeof(tme);
     tme.dwFlags = TME_LEAVE;

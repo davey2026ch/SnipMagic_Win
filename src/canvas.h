@@ -28,7 +28,7 @@ public:
     bool Create(HWND parent, HINSTANCE hi);
     HWND Hwnd() const { return hwnd_; }
 
-    void SetDocument(Document* doc) { doc_ = doc; Refresh(); }
+    void SetDocument(Document* doc);
     Document* GetDocument() const { return doc_; }
 
     void SetTool(Tool t);
@@ -65,6 +65,11 @@ public:
     void DeleteSelection();
     void Undo();
     void Redo();
+
+    // ---- GIF 动图页签的播放视图 ----
+    // 返回 true 表示按键已被 GIF 视图消费（左右方向键逐帧、空格播放/暂停）
+    bool HandleGifKey(WPARAM vk);
+    void RefreshGifView();
 
     void EnterGlobalPickMode() { pickingColor_ = true; }
 
@@ -133,4 +138,70 @@ private:
 
     // 覆盖式自绘滚动条状态（替代系统原生滚动条，支持暗色）
     scrollui::State vsb_, hsb_;
+
+    // ---- GIF 视图 ----
+    struct GifLayout {
+        RECT preview {};
+        RECT strip {};
+        RECT bottom {};
+        int padX = 8;
+        int thumbW = 100;
+        int thumbH = 46;
+        int gap = 4;
+        int labelH = 16;
+        int contentW = 0;
+        int viewW = 0;
+    };
+    struct GifControls {
+        RECT counter {};
+        RECT first {};
+        RECT prev {};
+        RECT play {};
+        RECT next {};
+        RECT last {};
+        RECT loop {};
+        RECT saveFrame {};
+        RECT saveTab {};
+        RECT saveGif {};
+        RECT scroll {};
+    };
+
+    GifLayout ComputeGifLayout(int w, int h) const;
+    GifControls ComputeGifControls(int w, int h) const;
+    void DrawGifView(Gdiplus::Graphics& g, int w, int h);
+    void DrawGifButton(Gdiplus::Graphics& g, const RECT& rc, const wchar_t* text, bool on,
+                       bool primary, bool glyph);
+    void GifMouseDown(int x, int y);
+    void GifMouseMove(int x, int y);
+    void GifMouseUp();
+    void GifWheel(int delta, int x, int y);
+    void OnGifTimer();
+    void UpdateGifTimer();
+    bool IsGifDoc() const { return doc_ && doc_->IsGif(); }
+    Gdiplus::Bitmap* GifFrameBitmap(int idx);
+    Gdiplus::Bitmap* GifThumb(int idx);
+    void SetGifFrame(int idx, bool pause);
+    // 播放/暂停：不循环且停在末帧时，再点播放会从头开始
+    void ToggleGifPlay();
+    void GifZoomAt(float factor, int mx, int my);   // Ctrl+滚轮：以光标为中心缩放
+    void GifPanBy(int dx, int dy);                  // 滚轮/拖动：平移画面
+    void GifClampPan();                             // 平移不能露出空白
+    int GifMaxScroll() const;
+    void GifEnsureVisible();
+
+    int gifCacheIdx_ = -1;
+    std::unique_ptr<Gdiplus::Bitmap> gifCache_;
+    bool gifTimerOn_ = false;
+    // 交互态
+    bool gifDragThumb_ = false;
+    bool gifPanDrag_ = false;      // 正在拖动预览画面
+    bool gifPanMoved_ = false;     // 本次按下是否真的拖动了（决定松开时是否算点击）
+    int  gifPanLastX_ = 0;
+    int  gifPanLastY_ = 0;
+    int gifDragOffset_ = 0;
+    int gifPressed_ = 0;   // 按下的按钮编号（见 .cpp 里的 kGif* 常量）
+    int gifHover_ = 0;
+    int gifScrollPressX_ = 0;
+    int gifScrollPressPos_ = 0;
 };
+

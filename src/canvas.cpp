@@ -9,6 +9,7 @@ using namespace Gdiplus;
 namespace {
 const wchar_t* kCanvasClass = L"ScreenshotToolCanvas";
 bool g_canvasClassReg = false;
+constexpr int kTimerGif = 11;   // GIF 播放推进
 
 void RegCanvasClass(HINSTANCE hi) {
     if (g_canvasClassReg) return;
@@ -166,6 +167,11 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_LBUTTONDOWN: {
         SetFocus(hwnd);
         SetCapture(hwnd);
+        // GIF 动图页签：整块客户区是播放界面，不进入标注编辑
+        if (IsGifDoc()) {
+            GifMouseDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+            return 0;
+        }
         // 自绘滚动条优先命中（命中后事件不进入画布编辑逻辑）
         RECT rc;
         GetClientRect(hwnd, &rc);
@@ -182,6 +188,10 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         OnMouseDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), true);
         return 0;
     case WM_MOUSEMOVE:
+        if (IsGifDoc()) {
+            GifMouseMove(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+            return 0;
+        }
         if (scrollui::Move(hwnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam),
                            vsb_, hsb_,
                            [this](int bar, int pos) { OnCustomScroll(bar, pos); })) {
@@ -194,6 +204,11 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         OnMouseMove(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
     case WM_LBUTTONUP:
+        if (IsGifDoc()) {
+            ReleaseCapture();
+            GifMouseUp();
+            return 0;
+        }
         if (scrollui::Up(vsb_, hsb_)) {
             ReleaseCapture();
             return 0;
@@ -202,11 +217,25 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         OnMouseUp(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
     case WM_LBUTTONDBLCLK:
+        if (IsGifDoc()) return 0;
         OnDoubleClick(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
     case WM_MOUSEWHEEL:
+        if (IsGifDoc()) {
+            // lParam 是屏幕坐标，转成客户区再判断光标在预览区还是缩略图条上
+            POINT wpt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(hwnd, &wpt);
+            GifWheel(GET_WHEEL_DELTA_WPARAM(wParam), wpt.x, wpt.y);
+            return 0;
+        }
         OnMouseWheel(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), GET_WHEEL_DELTA_WPARAM(wParam));
         return 0;
+    case WM_TIMER:
+        if (wParam == static_cast<WPARAM>(kTimerGif)) {
+            OnGifTimer();
+            return 0;
+        }
+        break;
     case WM_HSCROLL: {
         SCROLLINFO si = { sizeof(si), SIF_ALL };
         GetScrollInfo(hwnd, SB_HORZ, &si);
@@ -257,6 +286,10 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     case WM_SETCURSOR: {
         if (LOWORD(lParam) != HTCLIENT) break;
+        if (IsGifDoc()) {
+            SetCursor(LoadCursor(nullptr, IDC_ARROW));
+            return TRUE;
+        }
         POINT pt;
         GetCursorPos(&pt);
         ScreenToClient(hwnd, &pt);
@@ -319,6 +352,7 @@ LRESULT Canvas::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return TRUE;
     }
     case WM_KEYDOWN:
+        if (IsGifDoc() && HandleGifKey(wParam)) return 0;
         OnKeyDown(wParam);
         return 0;
     case WM_ERASEBKGND:
@@ -386,6 +420,12 @@ void Canvas::UpdateScrollBars() {
     };
 
     if (!doc_ || !doc_->base) {
+        hideBar(SB_HORZ);
+        hideBar(SB_VERT);
+        return;
+    }
+    // GIF 页签用自绘的缩略图条滚动条，不要系统滚动条
+    if (doc_->IsGif()) {
         hideBar(SB_HORZ);
         hideBar(SB_VERT);
         return;
@@ -464,6 +504,14 @@ void Canvas::OnPaint() {
     COLORREF bg = Settings().CanvasBg();
     SolidBrush bgBrush(ToGpColor(bg));
     g.FillRectangle(&bgBrush, 0, 0, w, h);
+
+    // GIF 动图页签：整块客户区交给播放视图
+    if (IsGifDoc()) {
+        DrawGifView(g, w, h);
+        BitBlt(hdc, 0, 0, w, h, memDc_, 0, 0, SRCCOPY);
+        EndPaint(hwnd_, &ps);
+        return;
+    }
 
     if (!doc_ || !doc_->base) {
         FontFamily family(L"Microsoft YaHei");
@@ -558,6 +606,36 @@ void Canvas::OnPaint() {
 
     BitBlt(hdc, 0, 0, w, h, memDc_, 0, 0, SRCCOPY);
     EndPaint(hwnd_, &ps);
+}
+
+void Canvas::SetDocument(Document* doc) {
+    doc_ = doc;
+    gifCache_.reset();
+    gifCacheIdx_ = -1;
+    gifDragThumb_ = false;
+    gifPressed_ = 0;
+    gifHover_ = 0;
+    if (doc_ && doc_->IsGif()) {
+        doc_->gifNextTick = 0;
+        if (doc_->gifFrame < 0 || doc_->gifFrame >= doc_->GifFrameCount()) doc_->gifFrame = 0;
+    }
+    UpdateGifTimer();
+    Refresh();
+}
+
+void Canvas::RefreshGifView() {
+    Refresh();
+}
+
+void Canvas::UpdateGifTimer() {
+    if (!hwnd_) return;
+    const bool need = IsGifDoc() && doc_->gifPlaying && doc_->GifFrameCount() > 1;
+    if (need && !gifTimerOn_) {
+        gifTimerOn_ = (SetTimer(hwnd_, kTimerGif, 10, nullptr) != 0);
+    } else if (!need && gifTimerOn_) {
+        KillTimer(hwnd_, kTimerGif);
+        gifTimerOn_ = false;
+    }
 }
 
 void Canvas::ZoomBy(float factor) {

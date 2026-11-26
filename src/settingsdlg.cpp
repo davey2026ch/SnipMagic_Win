@@ -11,7 +11,7 @@
 namespace {
 
 const int kW = 760;
-const int kH = 562;
+const int kH = 604;
 
 // 更新检测的后台结果槽（单实例单对话框）
 updater::UpdateInfo s_updInfo;
@@ -58,7 +58,8 @@ enum {
     IDC_VOLC_EYE = 3013,
     IDC_LONG_HOTKEY = 3014,
     IDC_CHECK_UPDATE = 3015,
-    IDC_BORDER_COPY = 3016
+    IDC_BORDER_COPY = 3016,
+    IDC_GIF_FPS = 3017
 };
 
 struct SetDlgState {
@@ -282,6 +283,9 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             st->draft.mosaicSize = GetDlgItemInt(hwnd, IDC_MOSAIC, nullptr, FALSE);
             st->draft.lineThickness = GetDlgItemInt(hwnd, IDC_LINE, nullptr, FALSE);
             st->draft.brushThickness = GetDlgItemInt(hwnd, IDC_BRUSH, nullptr, FALSE);
+            st->draft.gifFps = GetDlgItemInt(hwnd, IDC_GIF_FPS, nullptr, FALSE);
+            if (st->draft.gifFps < 1) st->draft.gifFps = 1;
+            if (st->draft.gifFps > 60) st->draft.gifFps = 60;
             if (st->draft.mosaicSize < 1) st->draft.mosaicSize = 1;
             if (st->draft.lineThickness < 1) st->draft.lineThickness = 1;
             if (st->draft.brushThickness < 1) st->draft.brushThickness = 1;
@@ -334,9 +338,9 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                : (dark ? RGB(32, 32, 32) : RGB(255, 255, 255));
             Graphics g(dis->hDC);
             SolidBrush bg(ToGpColor(bgc));
-            g.FillRectangle(&bg, dis->rcItem.left, dis->rcItem.top,
-                            dis->rcItem.right - dis->rcItem.left,
-                            dis->rcItem.bottom - dis->rcItem.top);
+            g.FillRectangle(&bg, static_cast<INT>(dis->rcItem.left), static_cast<INT>(dis->rcItem.top),
+                            static_cast<INT>(dis->rcItem.right - dis->rcItem.left),
+                            static_cast<INT>(dis->rcItem.bottom - dis->rcItem.top));
             const wchar_t* txt = L"";
             switch (dis->itemID) {
             case 0: txt = L"跟随系统"; break;
@@ -548,6 +552,17 @@ bool SettingsDialog::Show(HWND owner) {
     edit(IDC_BRUSH, std::to_wstring(st.draft.brushThickness).c_str(), 140, y - 3, 100);
     y += 42;
 
+    // GIF 录制帧率（1-60，默认 24）
+    label(L"GIF帧率", 20, y);
+    edit(IDC_GIF_FPS, std::to_wstring(st.draft.gifFps).c_str(), 140, y - 3, 100);
+    {
+        HWND fpsHint = CreateWindowW(L"STATIC", L"每秒抓取帧数（1-60），默认 24；数值越大越流畅、文件也越大",
+                                     WS_CHILD | WS_VISIBLE,
+                                     248, y + 2, 480, 22, hwnd, nullptr, hi, nullptr);
+        SendMessageW(fpsHint, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    }
+    y += 42;
+
     // 带边框复制到外部软件（自绘滑动开关 + 右侧说明）
     label(L"带边框复制", 20, y);
     HWND borderSw = CreateWindowW(L"BUTTON", L"",
@@ -679,6 +694,9 @@ bool SettingsDialog::Show(HWND owner) {
     s.mosaicSize = st.draft.mosaicSize;
     s.lineThickness = st.draft.lineThickness;
     s.brushThickness = st.draft.brushThickness;
+    s.gifFps = st.draft.gifFps;
+    if (s.gifFps < 1) s.gifFps = 1;
+    if (s.gifFps > 60) s.gifFps = 60;
     s.borderCopyToExternal = st.draft.borderCopyToExternal;
     s.mineruToken = util::TrimToken(st.draft.mineruToken);
     s.volcApiKey = util::TrimToken(st.draft.volcApiKey);

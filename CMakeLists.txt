@@ -20,6 +20,11 @@ add_executable(ScreenshotTool WIN32
     src/overlay.cpp
     src/canvas.h
     src/canvas.cpp
+    src/canvas_gif.cpp
+    src/gifcodec.h
+    src/gifcodec.cpp
+    src/gifrecord.h
+    src/gifrecord.cpp
     src/compareview.h
     src/compareview.cpp
     src/colorpicker.h
@@ -60,5 +65,5 @@ if(MSVC)
 endif()
 
 target_link_libraries(ScreenshotTool PRIVATE
-    user32 gdi32 gdiplus comctl32 comdlg32 shell32 ole32 oleaut32 shlwapi uxtheme msimg32 imm32 winhttp crypt32 uuid
+    user32 gdi32 gdiplus comctl32 comdlg32 shell32 ole32 oleaut32 shlwapi uxtheme msimg32 imm32 winhttp crypt32 uuid winmm
 )

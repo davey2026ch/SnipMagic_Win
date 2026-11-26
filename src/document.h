@@ -1,6 +1,7 @@
 #pragma once
 #include "util.h"
 #include "annotation.h"
+#include "gifcodec.h"
 
 // One sheet / tab = one screenshot + annotations
 class Document {
@@ -9,6 +10,20 @@ public:
     std::wstring name; // P1, P2...
     std::unique_ptr<Gdiplus::Bitmap> base; // original capture (physical pixels)
     std::vector<std::unique_ptr<Annotation>> annotations;
+
+    // 动图页签（GIF 录制结果）：非空时本页签是 GIF，base 只用于缩略显示（当前帧）
+    std::shared_ptr<gifcodec::Anim> gif;
+
+    // GIF 播放视图状态（每页签独立；由画布维护）
+    int gifFrame = 0;              // 当前帧
+    bool gifPlaying = false;       // 播放中（默认不自动播放，只有点播放按钮才播）
+    bool gifLoop = false;          // 循环播放（默认关：点播放只播一次）
+    float gifZoom = 1.0f;          // 预览缩放倍数（1 = 适应可视区）
+    float gifPanX = 0.0f;          // 预览平移（相对居中位置，屏幕像素）
+    float gifPanY = 0.0f;
+    int gifStripScroll = 0;        // 缩略图条横向滚动量
+    unsigned long long gifNextTick = 0; // 下一帧的时间点（GetTickCount64）
+    std::vector<std::unique_ptr<Gdiplus::Bitmap>> gifThumbs; // 缩略图缓存（懒加载）
 
     // Undo / redo snapshots
     struct Snapshot {
@@ -47,6 +62,16 @@ public:
 
     explicit Document(std::unique_ptr<Gdiplus::Bitmap> bmp, int documentId, std::wstring docName)
         : id(documentId), name(std::move(docName)), base(std::move(bmp)) {}
+
+    // GIF 动图页签：base 取第一帧，便于画布/页签按普通文档处理尺寸
+    Document(std::shared_ptr<gifcodec::Anim> anim, int documentId, std::wstring docName);
+
+    bool IsGif() const { return gif && !gif->Empty(); }
+    int GifFrameCount() const { return gif ? static_cast<int>(gif->frames.size()) : 0; }
+    // 把当前帧写回 base（切帧时调用，界面与保存用的都是 base 的合成结果）
+    void SyncGifBaseToCurrentFrame();
+    // 取当前帧位图（独立副本，调用方拥有）
+    std::unique_ptr<Gdiplus::Bitmap> CurrentGifFrame() const;
 
     int Width() const  { return base ? static_cast<int>(base->GetWidth())  : 0; }
     int Height() const { return base ? static_cast<int>(base->GetHeight()) : 0; }

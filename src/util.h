@@ -685,9 +685,76 @@ inline std::wstring DownloadsDir() {
     return dir;
 }
 
+// 文件是否存在（目录不算）
+inline bool FileExists(const std::wstring& path) {
+    if (path.empty()) return false;
+    const DWORD a = GetFileAttributesW(path.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// 当前时间 → 202611251526（建文件夹用）
+inline std::wstring TimeStampCompact() {
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    return Format(L"%04d%02d%02d%02d%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+}
+
+// P1.png + 已有同名 → P1_001.png / P1_002.png …（三位序号，取第一个没用过的）
+inline std::wstring NumberedPath(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L"\\/");
+    const std::wstring dir = (slash == std::wstring::npos) ? L"" : path.substr(0, slash + 1);
+    const std::wstring file = (slash == std::wstring::npos) ? path : path.substr(slash + 1);
+    const size_t dot = file.find_last_of(L'.');
+    const std::wstring stem = (dot == std::wstring::npos) ? file : file.substr(0, dot);
+    const std::wstring ext = (dot == std::wstring::npos) ? L"" : file.substr(dot);
+    for (int i = 1; i <= 999; ++i) {
+        std::wstring cand = dir + stem + Format(L"_%03d", i) + ext;
+        if (!FileExists(cand)) return cand;
+    }
+    return dir + stem + L"_" + Format(L"%u", GetTickCount()) + ext;
+}
+
+// 同名文件提示：0=取消 1=替换 2=追加序号再保存
+inline int AskOverwriteChoice(HWND owner, const std::wstring& path) {
+    typedef HRESULT(WINAPI* TaskDlgFn)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
+    HMODULE comctl = GetModuleHandleW(L"comctl32.dll");
+    auto fn = comctl ? reinterpret_cast<TaskDlgFn>(GetProcAddress(comctl, "TaskDialogIndirect")) : nullptr;
+
+    std::wstring content = L"文件已存在：\r\n" + path + L"\r\n\r\n请选择替换已有文件，或追加序号后另存（如 P1_001.png）。";
+    if (fn) {
+        TASKDIALOG_BUTTON btns[2] = {
+            { 1001, L"替换已有文件" },
+            { 1002, L"追加序号再保存" },
+        };
+        TASKDIALOGCONFIG cfg = {};
+        cfg.cbSize = sizeof(cfg);
+        cfg.hwndParent = owner;
+        cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+        cfg.pszWindowTitle = L"保存图片";
+        cfg.pszMainIcon = TD_WARNING_ICON;
+        cfg.pszContent = content.c_str();
+        cfg.pButtons = btns;
+        cfg.cButtons = 2;
+        cfg.nDefaultButton = 1002;
+        int pressed = 0;
+        if (SUCCEEDED(fn(&cfg, &pressed, nullptr, nullptr))) {
+            if (pressed == 1001) return 1;
+            if (pressed == 1002) return 2;
+            return 0;
+        }
+    }
+    const int r = MessageBoxW(owner,
+                              (content + L"\r\n\r\n是 = 替换已有文件\r\n否 = 追加序号再保存（如 P1_001.png）").c_str(),
+                              L"保存图片", MB_YESNOCANCEL | MB_ICONWARNING | MB_TOPMOST);
+    if (r == IDYES) return 1;
+    if (r == IDNO) return 2;
+    return 0;
+}
+
 inline std::wstring OpenSaveDialog(HWND owner, bool save, const wchar_t* filter, const wchar_t* defExt,
                                    const wchar_t* defName, const wchar_t* title,
-                                   const wchar_t* initialDir = nullptr) {
+                                   const wchar_t* initialDir = nullptr,
+                                   bool overwritePrompt = true) {
     wchar_t file[MAX_PATH] = {};
     if (defName) wcsncpy_s(file, defName, _TRUNCATE);
     OPENFILENAMEW ofn = {};
@@ -699,7 +766,8 @@ inline std::wstring OpenSaveDialog(HWND owner, bool save, const wchar_t* filter,
     ofn.lpstrDefExt = defExt;
     ofn.lpstrTitle = title;
     ofn.lpstrInitialDir = initialDir;
-    ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST |
+                (save ? (overwritePrompt ? OFN_OVERWRITEPROMPT : 0) : OFN_FILEMUSTEXIST);
     if (save) {
         if (!GetSaveFileNameW(&ofn)) return L"";
     } else {

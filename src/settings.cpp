@@ -226,6 +226,9 @@ void AppSettings::Load() {
     mosaicSize     = (std::max)(1, IniInt(L"Settings", L"MosaicSize", 10));
     lineThickness  = (std::max)(1, IniInt(L"Settings", L"LineThickness", 4));
     brushThickness = (std::max)(1, IniInt(L"Settings", L"BrushThickness", 25));
+    gifFps = IniInt(L"Settings", L"GifFps", 24);
+    if (gifFps < 1) gifFps = 1;
+    if (gifFps > 60) gifFps = 60;
     themeColor     = util::ParseHex(IniValue(L"Settings", L"ThemeColor", L"#0078D4"));
     drawColor      = util::ParseHex(IniValue(L"Settings", L"DrawColor", L"#FF0000"));
     int a = IniInt(L"Settings", L"DrawAlpha", 255);
@@ -258,6 +261,7 @@ void AppSettings::Save() const {
     IniWriteInt(L"Settings", L"MosaicSize", mosaicSize);
     IniWriteInt(L"Settings", L"LineThickness", lineThickness);
     IniWriteInt(L"Settings", L"BrushThickness", brushThickness);
+    IniWriteInt(L"Settings", L"GifFps", gifFps);
     IniWrite(L"Settings", L"ThemeColor", util::ToHex(themeColor));
     IniWrite(L"Settings", L"DrawColor", util::ToHex(drawColor));
     IniWriteInt(L"Settings", L"DrawAlpha", drawAlpha);

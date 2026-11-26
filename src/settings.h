@@ -28,6 +28,8 @@ struct AppSettings {
     int mosaicSize      = 10;
     int lineThickness   = 4;
     int brushThickness  = 25;
+    // GIF 录制帧率（每秒抓几帧），设置界面可改，默认 24
+    int gifFps          = 24;
     COLORREF themeColor = RGB(0x00, 0x78, 0xD4); // Windows accent blue
 
     // Current drawing color (also persisted)

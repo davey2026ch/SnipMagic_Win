@@ -78,7 +78,8 @@ inline Geom Compute(HWND hwnd, const RECT& client) {
 
 inline void Fill(Gdiplus::Graphics& g, const RECT& r, Gdiplus::Color c) {
     Gdiplus::SolidBrush br(c);
-    g.FillRectangle(&br, r.left, r.top, r.right - r.left, r.bottom - r.top);
+    g.FillRectangle(&br, static_cast<INT>(r.left), static_cast<INT>(r.top),
+                    static_cast<INT>(r.right - r.left), static_cast<INT>(r.bottom - r.top));
 }
 
 inline void Draw(Gdiplus::Graphics& g, const Geom& gm, const State& v, const State& h,

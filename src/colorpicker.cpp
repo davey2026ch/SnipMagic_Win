@@ -554,9 +554,11 @@ LRESULT CALLBACK PickProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             RECT pr = PreviewRect();
             DrawChecker(mem, pr, dark);
             SolidBrush pv(ToGpColor(st->Current(), static_cast<BYTE>(st->alpha)));
-            g.FillRectangle(&pv, pr.left, pr.top, pr.right - pr.left, pr.bottom - pr.top);
+            g.FillRectangle(&pv, static_cast<INT>(pr.left), static_cast<INT>(pr.top),
+                            static_cast<INT>(pr.right - pr.left), static_cast<INT>(pr.bottom - pr.top));
             Pen pen(Color(255, 120, 120, 120), 1);
-            g.DrawRectangle(&pen, pr.left, pr.top, pr.right - pr.left - 1, pr.bottom - pr.top - 1);
+            g.DrawRectangle(&pen, static_cast<INT>(pr.left), static_cast<INT>(pr.top),
+                            static_cast<INT>(pr.right - pr.left - 1), static_cast<INT>(pr.bottom - pr.top - 1));
 
             // 左侧文字标签：无背景色，与滑杆同行
             for (int i = 0; i < 5; ++i) {

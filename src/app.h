@@ -2,6 +2,7 @@
 #include "util.h"
 #include "document.h"
 #include "canvas.h"
+#include "gifcodec.h"
 
 // forward
 namespace Gdiplus { class Graphics; }
@@ -39,12 +40,16 @@ public:
     void OnLongRegionSelected();
     void OnLongCaptureFinished(bool hasResult);
     void AddDocument(std::unique_ptr<Gdiplus::Bitmap> bmp);
+    // GIF 录制结果：新建「动图页签」（画布内直接就是播放界面）
+    void AddGifDocument(std::shared_ptr<gifcodec::Anim> anim);
     void ActivateDoc(int idx);
     // 返回 true 表示已成功保存；用户取消保存对话框或保存失败时返回 false
     bool SaveDoc(int idx);
     void CloseDoc(int idx);
     // 返回 true 表示保存流程已完成；用户取消路径/格式选择时返回 false
     bool SaveAllDocs();
+    // 把一张位图按用户选择的路径存成图片（同名文件会问「替换 / 追加序号」）
+    bool SaveFrameInteractive(std::unique_ptr<Gdiplus::Bitmap> bmp, const std::wstring& defName);
     void SelectTool(Tool t);
     void OpenColorPicker();
     void OpenSettings();
@@ -92,6 +97,26 @@ private:
     int HitLeftButton(int x, int y) const;
     int HitTab(int x, int y) const;
 
+    // ---- 底部页签：横向滚动 ----
+    struct TabMetrics {
+        int top = 0;        // 页签条顶边
+        int innerTop = 0;   // 页签本体顶边
+        int innerH = 0;     // 页签本体高度
+        int tabW = 0;
+        int gap = 0;
+        int padX = 0;
+        int contentW = 0;   // 所有页签总宽
+        int viewW = 0;      // 可视宽度
+        int maxScroll = 0;
+        int sbTop = 0;      // 横向滚动条
+        int sbH = 0;
+        bool needScroll = false;
+    };
+    TabMetrics ComputeTabs() const;
+    RECT TabRect(const TabMetrics& m, int idx) const;
+    void ClampTabScroll();
+    void EnsureTabVisible(int idx);
+
     HINSTANCE hi_ = nullptr;
     HWND hwnd_ = nullptr;
     HWND status_ = nullptr;
@@ -115,6 +140,10 @@ private:
     int hoverLeft_ = -1;
     int hoverTop_ = -1;
     int pressedTop_ = -1; // 顶部按钮按下态（与页签选中同款主题色反馈）
+    // 底部页签横向滚动
+    int tabScroll_ = 0;
+    bool tabDragThumb_ = false;
+    int tabDragOffset_ = 0;
     HWND tipHwnd_ = nullptr;
     std::wstring tipText_;
     bool tipVisible_ = false;
@@ -160,6 +189,7 @@ enum : int {
     ID_CMD_MAGIC_ERASE = 114,
     ID_CMD_LONG_CAPTURE = 115,
     ID_CMD_EXTRACT_VECTOR = 116,
+    ID_CMD_GIF_RECORD = 117,
 
     ID_TOOL_SELECT = 200,
     ID_TOOL_BRUSH = 201,

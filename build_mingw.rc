@@ -1,0 +1,4 @@
+// 便携构建用的资源脚本：图标 + 清单都内嵌进 exe
+// （MSVC 走 /MANIFEST:EMBED；这里改用资源方式，两者效果一致，dist 就不需要外挂 manifest 了）
+1 ICON "app.ico"
+1 24 "app.manifest"

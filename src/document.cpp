@@ -8,6 +8,32 @@ PasteBuffer& GlobalPasteBuffer() {
     return buf;
 }
 
+Document::Document(std::shared_ptr<gifcodec::Anim> anim, int documentId, std::wstring docName)
+    : id(documentId), name(std::move(docName)), gif(std::move(anim)) {
+    gifFrame = 0;
+    gifPlaying = false;   // 录完不自播，等用户点播放
+    gifLoop = false;   // 默认不循环：点播放只播一次，打开「循环」开关后才循环
+
+    if (gif && !gif->Empty()) {
+        base = gif->Decode(0);
+        if (base) {
+            gifThumbs.resize(gif->frames.size());
+        }
+    }
+}
+
+void Document::SyncGifBaseToCurrentFrame() {
+    if (!IsGif()) return;
+    // base 只影响显示与导出，直接换成当前帧解码结果（GIF 页签不参与标注编辑）
+    auto bmp = gif->Decode(gifFrame);
+    if (bmp) base = std::move(bmp);
+}
+
+std::unique_ptr<Bitmap> Document::CurrentGifFrame() const {
+    if (!IsGif()) return nullptr;
+    return gif->Decode(gifFrame);
+}
+
 void Document::PushUndo() {
     if (!base) return;
     Snapshot s;
@@ -91,6 +117,8 @@ std::unique_ptr<Bitmap> Document::RenderComposite() const {
 }
 
 bool Document::SaveAs(const std::wstring& path, bool jpg) const {
+    // GIF 动图页签：直接写 .gif（不重新量化已合成的画面，保持原始帧数据）
+    if (IsGif()) return gifcodec::WriteGif(path, *gif);
     auto bmp = RenderComposite();
     if (!bmp) return false;
     return util::SaveBitmapToFile(bmp.get(), path, jpg);
