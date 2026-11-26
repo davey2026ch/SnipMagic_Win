@@ -70,7 +70,7 @@
 
 ### 2.5 GIF 播放页（页签内）
 1. 布局自上而下：
-   - **预览区**：透明棋盘格背景 + 当前帧居中（大于可视区才等比缩小，不放大）；
+   - **预览区**：透明棋盘格背景 + 当前帧居中；默认 1 倍 = 适应可视区（原图比可视区大才等比缩小），可用 Ctrl+滚轮放大/缩小；
    - **缩略图条**：每帧一格，格下左侧帧号（0 起）、右侧该帧停留毫秒；当前帧高亮描边；
    - **底部控制条**：左侧横向滚动条（缩略图条溢出才显示），右侧「帧计数 · 本帧ms」+ 图形按钮 `⏮ ◀ ▶/⏸ ▶ ⏭` + **循环开关** + `保存帧` `存为页签` `保存GIF`。
 2. 播放语义：
@@ -79,7 +79,6 @@
    - 开关打开 → 循环播放；
    - 播放中再点 = 暂停；
    - **不循环且停在末帧时再点播放 → 从第 1 帧重新开始**（不能"点了没反应"）；
-   - 若停在末帧时把开关打开，顺手从头续播（可选项，实现里做了）。
 3. 键位：`←/→` 逐帧（并自动暂停）、`空格` 播放/暂停、`Home/End` 首/末帧。
 4. 预览区交互：
    - 单击画面 = 不做任何事（避免误触开始播放）；按住拖动 = 平移；
@@ -140,7 +139,7 @@ struct Anim {
     vector<Frame> frames;
 };
 ```
-**内存里存的是压缩态**：15 秒 24fps 的 640×480 录制约 10–20MB，可接受；播放时按需解压当前帧并缓存 1 帧。
+**内存里存的是压缩态**：15 秒 24fps 的 700×400 录制约 10–20MB，可接受；播放时按需解压当前帧并缓存 1 帧。
 
 ### 4.2 页签状态（每个动图页签独立）
 ```cpp
@@ -306,7 +305,26 @@ vector<Bitmap*> gifThumbs;   // 缩略图缓存（按需生成，只缓存看过
 - 时间文件夹格式 `yyyyMMddHHmm`，`DateFormatter(dateFormat: "yyyyMMddHHmm", locale: en_US_POSIX)`。
 - 同名问询：`NSAlert` 两个按钮（默认按钮设为「追加序号再保存」，Esc/关闭 = 取消）；保存面板要关掉自带覆盖确认（`NSSavePanel` 本身不确认覆盖，保存前自己判断 `FileManager.fileExists`）。
 
-### 8.7 键盘与焦点
+### 8.7 录制时隐藏主窗口（新增行为，容易漏）
+- 点「GIF」时先隐藏主界面，避免把自己的窗口录进画面；取消/停止后按原状态（普通/最大化）恢复并前置。
+- macOS 对应：`window.orderOut(nil)` 隐藏；恢复用 `window.makeKeyAndOrderFront(nil)` + `NSApp.activate(ignoringOtherApps: true)`。
+- Windows 有"前台锁"（后台进程 `SetForegroundWindow` 会被忽略），macOS 没有这个问题，但要注意
+  如果 app 是 `LSUIElement`（无 Dock 图标），`activate` 后窗口可能不置前，需要 `NSRunningApplication.current.activate`。
+- 录制窗口若设置了 `level = .screenSaver` / `.floating` 保持置顶，恢复主窗口前记得把录制窗口 `orderOut`。
+
+### 8.8 预览缩放与平移
+- 缩放：`NSEvent` 的 `.scrollWheel` 且 `event.modifierFlags.contains(.control)` → 调整 `zoom`；
+  也可额外支持触控板捏合 `.magnify`（`event.magnification`）。
+- 平移：`.scrollWheel`（`event.scrollingDeltaX/Y`）兜底；拖动用 `mouseDown/mouseDragged`。
+- 缩放**以光标为中心**：把光标点换算成图像坐标 `u,v`，缩放后反解平移量，保持该点在屏幕上不动。
+- 平移要夹住（`abs(pan) <= (scaledSize - viewport)/2`），否则会拖出空白；缩放到 1 倍时平移归零。
+
+### 8.9 不要做自动播放
+- 录完停在第 1 帧、任何滚动/缩放/点击都不触发播放；只有播放按钮（和空格键）能启动。
+- macOS 侧注意：不要用 `AVPlayer`/`CAAnimation` 的自动播放，也不要在 `viewDidAppear`/`makeKeyAndOrderFront`
+  里启动定时器；播放必须由明确的用户动作触发。
+
+### 8.10 键盘与焦点
 - `←/→/空格/Home/End` 建议在窗口层做 `keyDown` 拦截（`performKeyEquivalent` 或 keyDown 覆写），不要依赖画布焦点，避免用户点了页签后快捷键失效（Windows 版就是踩了这个坑，后来在消息循环里兜了一层）。
 
 ---
