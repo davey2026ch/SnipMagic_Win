@@ -102,8 +102,11 @@ void GifRecorder::BuildWindow(HWND owner) {
                 work.left + ((work.right - work.left) - rw) / 2 + rw,
                 work.top + ((work.bottom - work.top) - rh) / 2 + rh };
 
-    DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN;
-    DWORD exStyle = WS_EX_TOPMOST;
+    // 标题栏三个按钮都要：最小化 / 最大化 / 关闭。
+    // WS_EX_APPWINDOW：让这个弹出窗在任务栏也有按钮，最小化后还能点回来（否则就"消失"了）。
+    DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX |
+                  WS_THICKFRAME | WS_CLIPCHILDREN;
+    DWORD exStyle = WS_EX_TOPMOST | WS_EX_APPWINDOW;
 
     // 先按「选区 + 边框 + 底栏」算出含标题栏的窗口尺寸
     int cw = (region_.right - region_.left) + kBorder * 2;
@@ -615,6 +618,29 @@ LRESULT CALLBACK GifRecorder::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         if (self.state_ != State::Idle && r != HTCLIENT) return HTNOWHERE; // 录制中锁定位置/大小
         return r;
     }
+    case WM_GETMINMAXINFO: {
+        // 下限：保证底部控制条（两个按钮 + 状态文字）永远放得下
+        auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+        RECT need = { 0, 0, util::Scale(430, self.dpi_), util::Scale(210, self.dpi_) };
+        DWORD st = static_cast<DWORD>(GetWindowLongW(hwnd, GWL_STYLE));
+        DWORD ex = static_cast<DWORD>(GetWindowLongW(hwnd, GWL_EXSTYLE));
+        AdjustWindowRectEx(&need, st, FALSE, ex);
+        mmi->ptMinTrackSize.x = need.right - need.left;
+        mmi->ptMinTrackSize.y = need.bottom - need.top;
+        return 0;
+    }
+    case WM_SYSCOMMAND: {
+        const UINT cmd = static_cast<UINT>(wParam) & 0xFFF0;
+        if (self.state_ != State::Idle &&
+            (cmd == SC_MINIMIZE || cmd == SC_MAXIMIZE || cmd == SC_RESTORE ||
+             cmd == SC_MOVE || cmd == SC_SIZE)) {
+            // 录制中把这些藏起来会导致停不掉，直接忽略
+            self.UpdateStatusText();
+            return 0;
+        }
+        // 空闲时交给系统处理，才会真的最小化/最大化
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
     case WM_COMMAND: {
         const int id = LOWORD(wParam);
         if (id == kIdMain) {
@@ -660,4 +686,5 @@ LRESULT CALLBACK GifRecorder::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     default:
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);   // 兜底：任何 break 都要回到系统默认处理
 }

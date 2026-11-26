@@ -1990,12 +1990,13 @@ bool App::SaveAllDocs() {
         ShowStatusMessage(L"没有可保存的页签");
         return true;
     }
-    // 一次全部保存 = 自动在「下载」里建一个以当前时间命名的文件夹（202611251526）
+    // 一次全部保存 = 自动在「下载」里建一个以当前时间命名的文件夹（截图大师_202611260858）
     std::wstring base = util::DownloadsDir();
     if (base.empty()) base = util::GetExeDir();
     if (!base.empty() && (base.back() == L'\\' || base.back() == L'/')) base.pop_back();
 
-    std::wstring stamp = util::TimeStampCompact();
+    // 文件夹名固定前缀「截图大师_」+ 时间戳，例：截图大师_202611260858
+    std::wstring stamp = std::wstring(L"截图大师") + L"_" + util::TimeStampCompact();
     std::wstring folder = base + L"\\" + stamp;
     for (int i = 2; i <= 99; ++i) {
         const DWORD a = GetFileAttributesW(folder.c_str());
