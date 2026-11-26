@@ -3,9 +3,9 @@
 #include <wchar.h>
 
 #define APP_NAME        L"截图大师SnipMagic"
-#define APP_VERSION     L"4.2.2"
-#define APP_VERSION_RC  4,2,2,0
-#define APP_VERSION_STR "4.2.2.0"
+#define APP_VERSION     L"4.2.3"
+#define APP_VERSION_RC  4,2,3,0
+#define APP_VERSION_STR "4.2.3.0"
 #define APP_BUILD_TIME  __DATE__ " " __TIME__
 #define APP_INI_NAME    L"SnipMagic.ini"
 

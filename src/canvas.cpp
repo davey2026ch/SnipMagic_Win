@@ -688,6 +688,13 @@ void Canvas::SetDocument(Document* doc) {
     Refresh();
 }
 
+void Canvas::ReleaseGdiplusCache() {
+    // 只断开指针、释放位图，不触发任何重绘（此时窗口可能已经销毁）
+    doc_ = nullptr;
+    gifCache_.reset();
+    draft_.reset();
+}
+
 void Canvas::RefreshGifView() {
     Refresh();
 }

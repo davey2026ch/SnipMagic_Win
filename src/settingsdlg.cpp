@@ -11,7 +11,7 @@
 namespace {
 
 const int kW = 760;
-const int kH = 646;   // 增加「录制鼠标箭头」一行（+42）
+const int kH = 688;   // 增加「邮件客户端兼容」一行（+42）
 
 // 更新检测的后台结果槽（单实例单对话框）
 updater::UpdateInfo s_updInfo;
@@ -61,7 +61,8 @@ enum {
     IDC_BORDER_COPY = 3016,
     IDC_GIF_FPS = 3017,
     IDC_CURSOR_SHOT = 3018,
-    IDC_CURSOR_GIF = 3019
+    IDC_CURSOR_GIF = 3019,
+    IDC_CLIP_HTML = 3020
 };
 
 struct SetDlgState {
@@ -288,6 +289,11 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             InvalidateRect(GetDlgItem(hwnd, IDC_CURSOR_GIF), nullptr, FALSE);
             return 0;
         }
+        if (id == IDC_CLIP_HTML) {
+            st->draft.clipboardHtmlTempFile = !st->draft.clipboardHtmlTempFile;
+            InvalidateRect(GetDlgItem(hwnd, IDC_CLIP_HTML), nullptr, FALSE);
+            return 0;
+        }
         if (id == IDC_CHECK_UPDATE) {
             if (st->updateBusy) return 0;
             st->updateBusy = true;
@@ -438,6 +444,10 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         if (dis->CtlID == IDC_BORDER_COPY) {
             DrawSwitch(dis, st && st->draft.borderCopyToExternal);
+            return TRUE;
+        }
+        if (dis->CtlID == IDC_CLIP_HTML) {
+            DrawSwitch(dis, st && st->draft.clipboardHtmlTempFile);
             return TRUE;
         }
         if (dis->CtlID == IDC_CURSOR_SHOT) {
@@ -663,6 +673,20 @@ bool SettingsDialog::Show(HWND owner) {
     SendMessageW(borderHint, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     y += 42;
 
+    // 邮件客户端兼容（自绘滑动开关 + 右侧说明）：默认关 = 复制全程不落盘
+    label(L"邮件客户端兼容", 20, y);
+    HWND clipSw = CreateWindowW(L"BUTTON", L"",
+                                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                140, y - 3, 46, 24, hwnd,
+                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CLIP_HTML)), hi, nullptr);
+    (void)clipSw;
+    HWND clipHint = CreateWindowW(L"STATIC",
+                                  L"默认关闭：复制只在内存、不写磁盘；邮件客户端贴图需开启",
+                                  WS_CHILD | WS_VISIBLE,
+                                  198, y + 2, 545, 22, hwnd, nullptr, hi, nullptr);
+    SendMessageW(clipHint, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    y += 42;
+
     // 密码字号略小，保证长 token 单行可完整显示
     HFONT fontPw = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Consolas");
@@ -786,6 +810,9 @@ bool SettingsDialog::Show(HWND owner) {
     s.borderCopyToExternal = st.draft.borderCopyToExternal;
     s.captureCursorShot = st.draft.captureCursorShot;
     s.captureCursorGif = st.draft.captureCursorGif;
+    s.clipboardHtmlTempFile = st.draft.clipboardHtmlTempFile;
+    // 关掉兼容开关时顺手把可能残留的临时图片清掉，不等退出
+    if (!s.clipboardHtmlTempFile) util::PurgeClipboardTempFiles();
     s.mineruToken = util::TrimToken(st.draft.mineruToken);
     s.volcApiKey = util::TrimToken(st.draft.volcApiKey);
     // themeColor 保持原值（设置界面已不再提供）

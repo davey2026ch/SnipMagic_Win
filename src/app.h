@@ -27,6 +27,9 @@ public:
 
     bool Init(HINSTANCE hi, int nCmdShow);
     int Run();
+    // 退出前（GdiplusShutdown 之前）释放页面里的位图：静态对象若在 GDI+ 关闭后
+    // 才析构，退出时会触发 0xC0000005
+    void ReleaseGdiplusResources();
     void OnSettingsChanged();
     void UpdateStatus();
     void UpdateTitle();

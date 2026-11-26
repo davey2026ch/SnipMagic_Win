@@ -517,7 +517,7 @@ bool Document::CopySelectionToClipboard(Bitmap** outInternal) {
                         external = std::move(bordered);
                     }
                 }
-                util::BitmapToClipboard(external.get()); // CF_DIB + PNG + HTML Format
+                util::BitmapToClipboard(external.get(), Settings().clipboardHtmlTempFile); // CF_DIB + PNG + HTML Format
                 GlobalPasteBuffer().Set(std::move(internal));
                 return true;
             }
@@ -553,7 +553,7 @@ bool Document::CopySelectionToClipboard(Bitmap** outInternal) {
         external.reset(crop->Clone(0, 0, crop->GetWidth(), crop->GetHeight(),
                                    PixelFormat32bppARGB));
     }
-    util::BitmapToClipboard(external.get()); // CF_DIB + PNG + HTML Format
+    util::BitmapToClipboard(external.get(), Settings().clipboardHtmlTempFile); // CF_DIB + PNG + HTML Format
     GlobalPasteBuffer().Set(std::unique_ptr<Bitmap>(
         crop->Clone(0, 0, crop->GetWidth(), crop->GetHeight(), PixelFormat32bppARGB)));
     return true;

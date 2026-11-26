@@ -31,6 +31,10 @@ public:
     void SetDocument(Document* doc);
     Document* GetDocument() const { return doc_; }
 
+    // 退出时在 GdiplusShutdown 之前调用：释放画布自己持有的 GDI+ 对象，
+    // 否则静态对象在 GDI+ 关闭之后再析构会崩（0xC0000005）
+    void ReleaseGdiplusCache();
+
     void SetTool(Tool t);
     Tool GetTool() const { return tool_; }
     // 双击工具栏按钮锁定：连续添加，添加后不切换回选择工具、不显示选择框

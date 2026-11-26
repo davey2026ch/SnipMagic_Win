@@ -150,6 +150,25 @@ inline std::wstring MakeTempDir(const wchar_t* prefix) {
     return name;
 }
 
+// 清掉 %TEMP% 下以 prefix 开头的遗留目录（正常流程结束会自己删，这里兜底崩溃/强杀留下的）
+inline int PurgeTempDirs(const wchar_t* prefix) {
+    if (!prefix || !*prefix) return 0;
+    wchar_t base[MAX_PATH] = {};
+    if (!GetTempPathW(MAX_PATH, base)) return 0;
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = FindFirstFileW((std::wstring(base) + prefix + L"*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    int n = 0;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        DeletePathRecursive(std::wstring(base) + fd.cFileName);
+        ++n;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return n;
+}
+
 inline std::wstring UrlFileName(const std::wstring& url) {
     size_t q = url.find_first_of(L"?#");
     std::wstring u = (q == std::wstring::npos) ? url : url.substr(0, q);

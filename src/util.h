@@ -463,72 +463,109 @@ inline std::string Base64Encode(const std::vector<BYTE>& data) {
     return Base64Encode(data.data(), data.size());
 }
 
-// 清理临时目录里超过 24 小时的旧 PNG（每次复制调用一次，防止无限堆积；
-// 24 小时内的保留——粘贴动作可能发生在复制之后的任意时刻）
-inline void CleanupClipboardTempFiles(const std::wstring& dir) {
-    WIN32_FIND_DATAW fd = {};
-    HANDLE h = FindFirstFileW((dir + L"\\*.png").c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    FILETIME nowFt;
-    GetSystemTimeAsFileTime(&nowFt);
-    ULONGLONG now = (static_cast<ULONGLONG>(nowFt.dwHighDateTime) << 32) | nowFt.dwLowDateTime;
-    const ULONGLONG kDay = 24ull * 3600 * 10000000ull; // 24h，单位 100ns
-    do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        ULONGLONG t = (static_cast<ULONGLONG>(fd.ftLastWriteTime.dwHighDateTime) << 32) |
-                      fd.ftLastWriteTime.dwLowDateTime;
-        if (now > t + kDay) {
-            DeleteFileW((dir + L"\\" + fd.cFileName).c_str());
-        }
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
+// 剪贴板 HTML 引用的临时图片目录。只在「邮件客户端兼容」开关打开时才用得上，
+// 默认完全不写这个目录（截图内容全程留在内存里）。
+inline std::wstring ClipboardTempDir() {
+    wchar_t temp[MAX_PATH] = {};
+    if (!GetTempPathW(MAX_PATH, temp)) return L"";
+    return std::wstring(temp) + L"SnipMagicClip";
 }
 
-// 把 PNG 落盘到临时目录并生成 CF_HTML 放上剪贴板。任何一步失败都静默返回
-// （CF_DIB / PNG 格式已在前面设置，不影响其他软件）。
+// 删除失败（被杀软/索引服务短暂占用、只读属性）时重试几次，避免清理动作悄悄失效
+inline bool DeleteFileRobust(const std::wstring& path) {
+    for (int i = 0; i < 10; ++i) {
+        if (DeleteFileW(path.c_str())) return true;
+        SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
+        Sleep(20);
+    }
+    return false;
+}
+
+// 清空临时目录里的全部 PNG。
+//   removeDir=true（启动/退出/关开关时用）：连空目录一起删掉，不留空壳；
+//   removeDir=false（复制过程中用）：只删文件不删目录——反复「删目录→重建」
+//   会撞上 Windows 的目录删除挂起，导致紧接着建文件失败。
+inline void PurgeClipboardTempFiles(bool removeDir = true) {
+    std::wstring dir = ClipboardTempDir();
+    if (dir.empty()) return;
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = FindFirstFileW((dir + L"\\*.png").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            DeleteFileRobust(dir + L"\\" + fd.cFileName);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    if (removeDir) {
+        for (int i = 0; i < 5 && !RemoveDirectoryW(dir.c_str()); ++i) Sleep(10);
+    }
+}
+
+// 生成 CF_HTML 并放上剪贴板。图片默认只以 data URI 内嵌，**完全不落盘**；
+// 只有 allowTempFile=true（设置里勾了「邮件客户端兼容」）才会额外在
+// %TEMP%\SnipMagicClip\ 写一张 PNG，给只认文件路径的邮件客户端取用。
+// 文件名固定为 clip_current.png —— 每次覆盖同一份，磁盘上从数量上就不可能超过一张，
+// 也就不需要在复制过程中删文件（少一次失败机会）。退出/启动/关开关时整体清掉。
+// 任何一步失败都静默返回（CF_DIB / PNG 格式已在前面设置，不影响其他软件）。
 // CF_HTML 规范：头部 4 个 10 位十进制偏移按 UTF-8 字节计算；四个字段名长度
 // 各不相同（StartFragment: 是 14 字符），所以头长不固定——先格式化一次测出
 // 实际头长，再回填真实偏移（偏移恒为 10 位数字，回填不改变头长）。
-inline void SetClipboardHtmlFormat(UINT fmt, const std::vector<BYTE>& png, UINT w, UINT h) {
+inline void SetClipboardHtmlFormat(UINT fmt, const std::vector<BYTE>& png, UINT w, UINT h,
+                                   bool allowTempFile) {
     if (png.empty()) return;
-    wchar_t temp[MAX_PATH] = {};
-    if (!GetTempPathW(MAX_PATH, temp)) return;
-    std::wstring dir = std::wstring(temp) + L"SnipMagicClip";
-    CreateDirectoryW(dir.c_str(), nullptr);
 
-    static unsigned s_seq = 0;
-    std::wstring file = dir + util::Format(L"\\clip_%u_%u.png", GetTickCount(), ++s_seq);
-    HANDLE hf = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr,
-                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hf == INVALID_HANDLE_VALUE) return;
-    DWORD written = 0;
-    WriteFile(hf, png.data(), static_cast<DWORD>(png.size()), &written, nullptr);
-    CloseHandle(hf);
-    if (written != png.size()) {
-        DeleteFileW(file.c_str());
-        return;
-    }
-
-    // 文件路径 → file:/// URI（UTF-8 + 百分号编码，反斜杠转正斜杠）
-    std::wstring fwd = file;
-    for (auto& c : fwd) if (c == L'\\') c = L'/';
-    std::string utf8 = WideToUtf8(fwd);
-    std::string uri = "file:///";
-    static const char* hex = "0123456789ABCDEF";
-    for (unsigned char c : utf8) {
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-            c == '-' || c == '.' || c == '_' || c == '~' || c == '/') {
-            uri += static_cast<char>(c);
-        } else {
-            uri += '%';
-            uri += hex[c >> 4];
-            uri += hex[c & 0x0F];
+    // 文件形式的引用地址（只有开了兼容开关才生成）
+    std::string uri;
+    if (allowTempFile) {
+        std::wstring dir = ClipboardTempDir();
+        if (!dir.empty()) {
+            CreateDirectoryW(dir.c_str(), nullptr); // 已存在时失败属正常
+            std::wstring file = dir + L"\\clip_current.png";
+            // TEMPORARY：提示缓存管理器尽量把内容留在内存、不做延迟写回
+            HANDLE hf = INVALID_HANDLE_VALUE;
+            for (int i = 0; i < 3; ++i) {
+                hf = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
+                                 nullptr);
+                if (hf != INVALID_HANDLE_VALUE) break;
+                Sleep(20);
+            }
+            if (hf != INVALID_HANDLE_VALUE) {
+                DWORD written = 0;
+                WriteFile(hf, png.data(), static_cast<DWORD>(png.size()), &written, nullptr);
+                CloseHandle(hf);
+                if (written == png.size()) {
+                    // 文件路径 → file:/// URI（UTF-8 + 百分号编码，反斜杠转正斜杠）
+                    std::wstring fwd = file;
+                    for (auto& c : fwd) if (c == L'\\') c = L'/';
+                    std::string utf8 = WideToUtf8(fwd);
+                    uri = "file:///";
+                    static const char* hex = "0123456789ABCDEF";
+                    for (unsigned char c : utf8) {
+                        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                            (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' ||
+                            c == '~' || c == '/') {
+                            uri += static_cast<char>(c);
+                        } else {
+                            uri += '%';
+                            uri += hex[c >> 4];
+                            uri += hex[c & 0x0F];
+                        }
+                    }
+                }
+            }
         }
+    } else {
+        // 默认模式：如果上一次开过兼容、磁盘上还留着那张图，顺手清掉（不删目录）
+        PurgeClipboardTempFiles(false);
     }
 
     std::string frag = "<img src=\"data:image/png;base64," + Base64Encode(png) +
                        "\" width=\"" + std::to_string(w) + "\" height=\"" + std::to_string(h) +
-                       "\" onerror=\"this.onerror=null;this.src='" + uri + "'\">";
+                       "\"";
+    if (!uri.empty()) frag += " onerror=\"this.onerror=null;this.src='" + uri + "'\"";
+    frag += ">";
     std::string pre = "<html><body>\r\n<!--StartFragment-->\r\n";
     std::string post = "\r\n<!--EndFragment-->\r\n</body></html>";
     std::string html = pre + frag + post;
@@ -556,8 +593,6 @@ inline void SetClipboardHtmlFormat(UINT fmt, const std::vector<BYTE>& png, UINT 
     } else {
         GlobalFree(hMem);
     }
-
-    CleanupClipboardTempFiles(dir);
 }
 
 // 是否存在非 255 的 alpha 像素（用于决定带透明底的内容复制时是否跳过边框，
@@ -582,9 +617,17 @@ inline bool BitmapHasAlpha(Gdiplus::Bitmap* bmp) {
 }
 
 // Put GDI+ bitmap onto Windows clipboard as CF_DIB
-inline bool BitmapToClipboard(Gdiplus::Bitmap* bmp) {
+// allowHtmlTempFile=true 时才会为 CF_HTML 生成临时 PNG 文件（见 SetClipboardHtmlFormat）
+inline bool BitmapToClipboard(Gdiplus::Bitmap* bmp, bool allowHtmlTempFile = false) {
     if (!bmp) return false;
-    if (!OpenClipboard(nullptr)) return false;
+    // 剪贴板可能被输入法、剪贴板历史等程序短暂占用，OpenClipboard 会失败；
+    // 这里重试几次，避免整次复制（含临时文件清理）被悄悄跳过
+    bool opened = false;
+    for (int i = 0; i < 6 && !opened; ++i) {
+        opened = OpenClipboard(nullptr) != FALSE;
+        if (!opened) Sleep(20);
+    }
+    if (!opened) return false;
     EmptyClipboard();
 
     UINT w = bmp->GetWidth();
@@ -667,10 +710,11 @@ inline bool BitmapToClipboard(Gdiplus::Bitmap* bmp) {
         }
     }
 
-    // 额外放一份 "HTML Format"（CF_HTML）：Foxmail 等网页式编辑器插图片只认该格式，
-    // 通过引用临时 PNG 文件让编辑器把图嵌进正文。失败不影响 CF_DIB / PNG。
+    // 额外放一份 "HTML Format"（CF_HTML）：Foxmail 等网页式编辑器插图片只认该格式。
+    // 默认把图片以 data URI 内嵌（不落盘）；只有开了「邮件客户端兼容」才额外写临时文件。
+    // 失败不影响 CF_DIB / PNG。
     if (UINT htmlFmt = RegisterClipboardFormatW(L"HTML Format")) {
-        SetClipboardHtmlFormat(htmlFmt, png, w, h);
+        SetClipboardHtmlFormat(htmlFmt, png, w, h, allowHtmlTempFile);
     }
     CloseClipboard();
     return true;

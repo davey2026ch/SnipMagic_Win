@@ -485,6 +485,17 @@ int App::Run() {
     return static_cast<int>(msg.wParam);
 }
 
+void App::ReleaseGdiplusResources() {
+    // 断开画布指向文档的指针并释放它自己的位图，再清空所有页签。
+    // 这些位图必须在 GdiplusShutdown 之前释放，否则静态对象析构时 GDI+ 已经关掉，
+    // 退出会出现 0xC0000005（带着未保存页签关程序时必现）。
+    Canvas::Instance().ReleaseGdiplusCache();
+    GlobalPasteBuffer().Clear(); // 复制/粘贴留下的位图同理
+    docs_.clear();          // 析构每个 Document → 释放其中的 GDI+ 位图
+    activeIdx_ = -1;
+    contextTabIdx_ = -1;
+}
+
 LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     App* self = nullptr;
     if (msg == WM_NCCREATE) {
@@ -798,6 +809,9 @@ LRESULT App::Handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         return 0;
     case WM_DESTROY:
+        // 先把可能存在的剪贴板临时图片清掉（放在最前面：即使后面退出流程出问题，
+        // 也不会把截图内容留在磁盘上）。默认设置下这个目录本来就不存在。
+        util::PurgeClipboardTempFiles();
         UnregisterHotKey(hwnd, kHotkeyId);
         UnregisterHotKey(hwnd, kLongHotkeyId);
         RemoveHotkeyHook();

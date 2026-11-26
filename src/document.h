@@ -145,6 +145,7 @@ struct PasteBuffer {
     std::unique_ptr<Gdiplus::Bitmap> bitmap;
     bool Has() const { return bitmap != nullptr; }
     void Set(std::unique_ptr<Gdiplus::Bitmap> bmp) { bitmap = std::move(bmp); }
+    void Clear() { bitmap.reset(); }
     std::unique_ptr<Gdiplus::Bitmap> Clone() const {
         if (!bitmap) return nullptr;
         return std::unique_ptr<Gdiplus::Bitmap>(

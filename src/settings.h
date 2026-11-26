@@ -45,6 +45,11 @@ struct AppSettings {
     bool captureCursorShot = false;   // 「截图」：区域截图
     bool captureCursorGif  = true;    // 「GIF录制」
 
+    // 「邮件客户端兼容」：某些老式邮件客户端只认 HTML 里引用的真实图片文件，
+    // 打开后复制时会在 %TEMP%\SnipMagicClip\ 留一张临时 PNG（退出即删）。
+    // 默认关闭 —— 截图内容全程只在内存里，磁盘上不留任何痕迹。
+    bool clipboardHtmlTempFile = false;
+
     // 取色器「最近使用」颜色（最新在前，最多 kRecentColorMax 个；持久化到 ini）
     // 宫格 8 列 × 3 行 = 24 格，其中前 3 格是固定色（红/黑/白，不可替换），
     // 因此「最近使用」最多记 21 个

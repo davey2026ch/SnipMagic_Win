@@ -1,5 +1,6 @@
 #include "app.h"
 #include "settings.h"
+#include "netutil.h"
 #include "version.h"
 #include <objidl.h>
 
@@ -49,12 +50,21 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     }
 
     int code = 0;
+    // 启动先清掉上次异常退出（崩溃/强杀/断电）可能留下的临时文件：
+    // 剪贴板 HTML 的临时 PNG、MinerU 提取切片的临时目录。
+    // 正常运行时截图/长截图/录制与编辑全程只在内存里，不会落盘。
+    util::PurgeClipboardTempFiles();
+    netutil::PurgeTempDirs(L"mineru_");
     if (App::Instance().Init(hInstance, nCmdShow)) {
         code = App::Instance().Run();
     } else {
         MessageBoxW(nullptr, L"初始化失败", APP_NAME, MB_ICONERROR);
         code = 1;
     }
+    // 退出时再清一次：开了「邮件客户端兼容」时临时 PNG 只活到程序关闭
+    util::PurgeClipboardTempFiles();
+    // 释放页面里的 GDI+ 位图（必须在 GdiplusShutdown 之前）
+    App::Instance().ReleaseGdiplusResources();
 
     if (mutex) CloseHandle(mutex);
     GdiplusShutdown(gdiplusToken);
